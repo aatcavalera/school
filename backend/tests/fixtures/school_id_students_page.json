@@ -1,0 +1,21 @@
+{
+  "draw": 1,
+  "recordsTotal": 1,
+  "recordsFiltered": 1,
+  "data": [
+    {
+      "uuid": "00000000-0000-0000-0000-000000000001",
+      "nis": "ANON-001",
+      "nisn": "ANON-NATIONAL-001",
+      "name": "Siswa Contoh",
+      "dob": "2012-01-01",
+      "gender": "L",
+      "status": 1,
+      "class": {"uuid": "class-anonymous", "name": "VII-A"},
+      "password": "excluded-value",
+      "fcm_token": "excluded-value",
+      "last_login_ip": "192.0.2.1",
+      "phone": "excluded-value"
+    }
+  ]
+}

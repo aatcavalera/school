@@ -1,0 +1,74 @@
+services:
+  backend:
+    build: ./backend
+    container_name: school-backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:5432/${POSTGRES_DB}
+      JWT_SECRET: ${JWT_SECRET}
+      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:-}
+      ATTENDANCE_SYNC_START_LOCAL: ${ATTENDANCE_SYNC_START_LOCAL:-05:30}
+      ATTENDANCE_SYNC_END_LOCAL: ${ATTENDANCE_SYNC_END_LOCAL:-17:00}
+      ATTENDANCE_SYNC_WEEKDAYS: ${ATTENDANCE_SYNC_WEEKDAYS:-0,1,2,3,4,5}
+    networks:
+      - apps_internal
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health/ready', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  sync-worker:
+    build: ./backend
+    restart: unless-stopped
+    command: ["python", "-m", "app.job_queue"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:5432/${POSTGRES_DB}
+      JWT_SECRET: ${JWT_SECRET}
+      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:-}
+      SYNC_PROCESS: worker
+      ATTENDANCE_SYNC_START_LOCAL: ${ATTENDANCE_SYNC_START_LOCAL:-05:30}
+      ATTENDANCE_SYNC_END_LOCAL: ${ATTENDANCE_SYNC_END_LOCAL:-17:00}
+      ATTENDANCE_SYNC_WEEKDAYS: ${ATTENDANCE_SYNC_WEEKDAYS:-0,1,2,3,4,5}
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - apps_internal
+
+  sync-scheduler:
+    build: ./backend
+    restart: unless-stopped
+    command: ["python", "-m", "app.job_queue"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:5432/${POSTGRES_DB}
+      JWT_SECRET: ${JWT_SECRET}
+      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:-}
+      SYNC_PROCESS: scheduler
+      ATTENDANCE_SYNC_START_LOCAL: ${ATTENDANCE_SYNC_START_LOCAL:-05:30}
+      ATTENDANCE_SYNC_END_LOCAL: ${ATTENDANCE_SYNC_END_LOCAL:-17:00}
+      ATTENDANCE_SYNC_WEEKDAYS: ${ATTENDANCE_SYNC_WEEKDAYS:-0,1,2,3,4,5}
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - apps_internal
+
+  frontend:
+    build: ./frontend
+    container_name: school-frontend
+    restart: unless-stopped
+    environment:
+      BACKEND_INTERNAL_URL: http://backend:8000
+    ports:
+      - "127.0.0.1:3010:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - apps_internal
+
+networks:
+  apps_internal:
+    external: true
