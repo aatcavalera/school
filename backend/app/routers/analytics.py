@@ -2,15 +2,20 @@ import csv
 import io
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import case, desc, distinct, func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.access import CurrentUser, get_current_user, resolve_school_id
+from pydantic import BaseModel
+
+from app.access import CurrentUser, get_current_user, require_school_access, resolve_school_id
 from app.cache import analytics_cache
 from app.db import get_db
 from app.models_multitenant import (
     AttendanceDailyAggregate,
+    AuditLog,
+    GenderOverride,
     School,
     SchoolYearSource,
     SyncCheckpoint,
@@ -59,6 +64,15 @@ async def school_analytics(
     total_classes = int((await db.execute(select(func.count()).select_from(SyncedClass).where(*active_class))).scalar_one())
     total_subjects = int((await db.execute(select(func.count()).select_from(SyncedSubject).where(*active_subject))).scalar_one())
 
+    override_rows = (await db.execute(
+        select(GenderOverride.entity_type, GenderOverride.source_uuid, GenderOverride.gender).where(
+            GenderOverride.school_id == selected
+        )
+    )).all()
+    overrides: dict[tuple[str, str], str] = {(etype, uuid_): gender for etype, uuid_, gender in override_rows}
+    student_overrides = {uuid_: gender for (etype, uuid_), gender in overrides.items() if etype == "student"}
+    teacher_overrides = {uuid_: gender for (etype, uuid_), gender in overrides.items() if etype == "teacher"}
+
     gender_rows = (await db.execute(
         select(SyncedStudent.gender, func.count()).where(*active_student).group_by(SyncedStudent.gender)
     )).all()
@@ -73,13 +87,20 @@ async def school_analytics(
         ))).all()
         verified_names.extend((name, gender_label(gender)) for name, gender in labelled)
     gender_classifier = AdaptiveGenderClassifier(verified_names + operator_samples())
-    missing_student_names = list((await db.execute(select(SyncedStudent.name).where(
+    missing_students = (await db.execute(select(SyncedStudent.source_uuid, SyncedStudent.name).where(
         *active_student, func.nullif(SyncedStudent.gender, "").is_(None)
-    ))).scalars())
+    ))).all()
     inferred_student_gender = {"Laki-laki": 0, "Perempuan": 0, "Belum dapat ditentukan": 0}
     confidence_total = 0.0
     inferred_count = 0
-    for name in missing_student_names:
+    overridden_student_count = 0
+    for source_uuid, name in missing_students:
+        override = student_overrides.get(source_uuid)
+        if override:
+            # Sudah dikoreksi manual oleh admin - hitung sebagai data resmi, bukan estimasi.
+            student_gender[override] = student_gender.get(override, 0) + 1
+            overridden_student_count += 1
+            continue
         estimate = gender_classifier.predict(name)
         if estimate.label:
             inferred_student_gender[estimate.label] += 1
@@ -98,11 +119,15 @@ async def school_analytics(
     for value, count in teacher_gender_rows:
         label = gender_label(value)
         teacher_gender[label] = teacher_gender.get(label, 0) + int(count)
-    missing_teacher_names = list((await db.execute(select(SyncedTeacher.name).where(
+    missing_teachers = (await db.execute(select(SyncedTeacher.source_uuid, SyncedTeacher.name).where(
         *active_teacher, func.nullif(SyncedTeacher.gender, "").is_(None)
-    ))).scalars())
+    ))).all()
     inferred_teacher_gender = {"Laki-laki": 0, "Perempuan": 0, "Belum dapat ditentukan": 0}
-    for name in missing_teacher_names:
+    for source_uuid, name in missing_teachers:
+        override = teacher_overrides.get(source_uuid)
+        if override:
+            teacher_gender[override] = teacher_gender.get(override, 0) + 1
+            continue
         estimate = gender_classifier.predict(name)
         inferred_teacher_gender[estimate.label or "Belum dapat ditentukan"] += 1
 
@@ -112,10 +137,11 @@ async def school_analytics(
         func.count(case((func.nullif(SyncedStudent.gender, "").is_not(None), 1))),
         func.count(case((func.nullif(SyncedStudent.class_name, "").is_not(None), 1))),
     ).where(*active_student))).one()
+    gender_filled = int(completeness_row[2]) + overridden_student_count
     completeness = [
         {"field": "NISN", "filled": int(completeness_row[0]), "percent": percentage(int(completeness_row[0]), total_students)},
         {"field": "Tanggal lahir", "filled": int(completeness_row[1]), "percent": percentage(int(completeness_row[1]), total_students)},
-        {"field": "Jenis kelamin", "filled": int(completeness_row[2]), "percent": percentage(int(completeness_row[2]), total_students)},
+        {"field": "Jenis kelamin", "filled": gender_filled, "percent": percentage(gender_filled, total_students)},
         {"field": "Kelas", "filled": int(completeness_row[3]), "percent": percentage(int(completeness_row[3]), total_students)},
     ]
 
@@ -241,6 +267,110 @@ async def school_analytics(
     }
     analytics_cache.set(cache_key, response)
     return response
+
+
+ENTITY_MODELS = {"student": SyncedStudent, "teacher": SyncedTeacher}
+
+
+@router.get("/gender-review")
+async def gender_review(
+    school_id: str | None = Query(default=None),
+    limit: int = Query(default=200, le=1000),
+    user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Nama siswa/guru yang jenis kelaminnya kosong di sumber School ID dan belum
+    dikoreksi manual, lengkap dengan tebakan heuristik supaya admin tinggal konfirmasi."""
+    selected = await resolve_school_id(db, user, school_id)
+
+    override_rows = (await db.execute(
+        select(GenderOverride.entity_type, GenderOverride.source_uuid).where(GenderOverride.school_id == selected)
+    )).all()
+    already_overridden = {(etype, uuid_) for etype, uuid_ in override_rows}
+
+    verified_names = []
+    for model, entity_type in ((SyncedStudent, "student"), (SyncedTeacher, "teacher")):
+        labelled = (await db.execute(select(model.name, model.gender).where(
+            model.school_id == selected, model.is_deleted.is_(False), func.nullif(model.gender, "").is_not(None)
+        ))).all()
+        verified_names.extend((name, gender_label(gender)) for name, gender in labelled)
+    classifier = AdaptiveGenderClassifier(verified_names + operator_samples())
+
+    items = []
+    for entity_type, model, extra_col in (
+        ("student", SyncedStudent, SyncedStudent.class_name),
+        ("teacher", SyncedTeacher, None),
+    ):
+        cols = [model.source_uuid, model.name] + ([extra_col] if extra_col is not None else [])
+        rows = (await db.execute(select(*cols).where(
+            model.school_id == selected, model.is_deleted.is_(False), func.nullif(model.gender, "").is_(None)
+        ))).all()
+        for row in rows:
+            source_uuid, name = row[0], row[1]
+            if (entity_type, source_uuid) in already_overridden:
+                continue
+            detail = row[2] if extra_col is not None else None
+            estimate = classifier.predict(name)
+            items.append({
+                "entity_type": entity_type,
+                "source_uuid": source_uuid,
+                "name": name,
+                "detail": detail,
+                "suggested_gender": estimate.label,
+                "confidence": estimate.confidence,
+            })
+
+    items.sort(key=lambda item: (item["confidence"] is None, -(item["confidence"] or 0)))
+    return {"total_unresolved": len(items), "items": items[:limit]}
+
+
+class GenderOverrideIn(BaseModel):
+    entity_type: str
+    source_uuid: str
+    gender: str
+
+
+@router.put("/gender-override")
+async def set_gender_override(
+    payload: GenderOverrideIn,
+    school_id: str | None = Query(default=None),
+    user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    selected = await resolve_school_id(db, user, school_id)
+    await require_school_access(db, user, selected)
+
+    if payload.entity_type not in ENTITY_MODELS:
+        raise HTTPException(status_code=400, detail="entity_type harus 'student' atau 'teacher'")
+    if payload.gender not in {"Laki-laki", "Perempuan"}:
+        raise HTTPException(status_code=400, detail="gender harus 'Laki-laki' atau 'Perempuan'")
+
+    model = ENTITY_MODELS[payload.entity_type]
+    exists = (await db.execute(select(model.source_uuid).where(
+        model.school_id == selected, model.source_uuid == payload.source_uuid, model.is_deleted.is_(False)
+    ))).scalar_one_or_none()
+    if not exists:
+        raise HTTPException(status_code=404, detail="Data siswa/guru tidak ditemukan di sekolah ini")
+
+    stmt = pg_insert(GenderOverride).values(
+        school_id=selected,
+        entity_type=payload.entity_type,
+        source_uuid=payload.source_uuid,
+        gender=payload.gender,
+        set_by=user.username,
+    )
+    stmt = stmt.on_conflict_do_update(
+        constraint="uq_gender_override_entity",
+        set_={"gender": stmt.excluded.gender, "set_by": stmt.excluded.set_by, "set_at": func.now()},
+    )
+    await db.execute(stmt)
+    db.add(AuditLog(
+        user_id=user.id, school_id=selected, action="gender_override.set",
+        details={"entity_type": payload.entity_type, "source_uuid": payload.source_uuid, "gender": payload.gender},
+    ))
+    await db.commit()
+    analytics_cache.set(f"school-analytics:{selected}", None)
+    return {"ok": True}
 
 
 @router.get("/insights")

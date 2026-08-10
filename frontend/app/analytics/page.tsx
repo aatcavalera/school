@@ -32,6 +32,7 @@ export default function AnalyticsPage() {
   const [insights, setInsights] = useState<Insights | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [refreshToken, setRefreshToken] = useState(0);
 
   useEffect(() => {
     apiFetch("/api/sync/schools").then((rows: School[]) => {
@@ -49,7 +50,7 @@ export default function AnalyticsPage() {
       apiFetch(`/api/analytics/insights?school_id=${encodeURIComponent(schoolId)}`),
     ]).then(([analytics, insightRows]) => { setData(analytics); setInsights(insightRows); })
       .catch((reason) => setError(reason.message)).finally(() => setLoading(false));
-  }, [schoolId]);
+  }, [schoolId, refreshToken]);
 
   return (
     <AppShell>
@@ -68,12 +69,14 @@ export default function AnalyticsPage() {
       </div>
 
       {error && <div className="mb-4 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</div>}
-      {loading && !data ? <Skeleton /> : data && <Portal data={data} insights={insights} schoolId={schoolId} />}
+      {loading && !data ? <Skeleton /> : data && (
+        <Portal data={data} insights={insights} schoolId={schoolId} onCorrected={() => setRefreshToken((v) => v + 1)} />
+      )}
     </AppShell>
   );
 }
 
-function Portal({ data, insights, schoolId }: { data: Analytics; insights: Insights | null; schoolId:string }) {
+function Portal({ data, insights, schoolId, onCorrected }: { data: Analytics; insights: Insights | null; schoolId:string; onCorrected: () => void }) {
   const e = data.executive;
   const studentGenderMissing = data.students.by_gender.find((row) => row.name === "Belum terisi")?.value || 0;
   const teacherGenderMissing = data.teachers.by_gender.find((row) => row.name === "Belum terisi")?.value || 0;
@@ -97,6 +100,7 @@ function Portal({ data, insights, schoolId }: { data: Analytics; insights: Insig
       title="Jenis kelamin siswa tidak lengkap di School ID"
       message={`${format(studentGenderMissing)} siswa tidak memiliki nilai resmi. Pola nama lengkap mengestimasi ${format(data.students.gender_estimate.estimated)} siswa dengan confidence rata-rata ${Math.round(data.students.gender_estimate.average_confidence*100)}%; ${format(data.students.gender_estimate.unresolved)} tetap belum dapat ditentukan. Estimasi ditandai dan tidak menimpa School ID.`}
     />}
+    {studentGenderMissing > 0 && <GenderReviewPanel schoolId={schoolId} onCorrected={onCorrected} />}
     <section className="mb-8 grid grid-cols-1 gap-4 xl:grid-cols-12">
       <Panel title="Siswa per Tingkat" className="xl:col-span-5">
         <ResponsiveContainer width="100%" height={250}>
@@ -172,6 +176,99 @@ function CompactLegend({ data }: { data:Datum[] }) { return <div className="spac
 function Progress({ label, value, detail }: { label:string; value:number; detail:string }) { return <div><div className="mb-1 flex justify-between text-xs"><span className="font-medium">{label}</span><span className="text-slate-400">{detail} · {value}%</span></div><div className="h-2 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800"><div className={`h-full rounded-full ${value >= 90 ? "bg-emerald-500" : value >= 60 ? "bg-amber-500" : "bg-red-500"}`} style={{width:`${value}%`}} /></div></div>; }
 function StatusDot({ ok }: { ok:boolean }) { return <span title={ok ? "Terpetakan" : "Belum terpetakan"} className={`inline-block h-2.5 w-2.5 rounded-full ${ok ? "bg-emerald-500" : "bg-slate-300"}`} />; }
 function DataQualityNotice({ title, message }: { title:string; message:string }) { return <div className="mb-4 flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-100"><span className="rounded-full bg-amber-200 px-2 py-0.5 text-xs font-bold text-amber-800">!</span><div><p className="text-sm font-bold">{title}</p><p className="mt-1 text-xs leading-relaxed opacity-80">{message}</p></div></div>; }
+
+type GenderReviewItem = { entity_type: "student" | "teacher"; source_uuid: string; name: string; detail: string | null; suggested_gender: string | null; confidence: number };
+
+function GenderReviewPanel({ schoolId, onCorrected }: { schoolId: string; onCorrected: () => void }) {
+  const [items, setItems] = useState<GenderReviewItem[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [savingKey, setSavingKey] = useState<string | null>(null);
+
+  function load() {
+    setLoading(true);
+    apiFetch(`/api/analytics/gender-review?school_id=${encodeURIComponent(schoolId)}`)
+      .then((res) => { setItems(res.items); setTotal(res.total_unresolved); })
+      .finally(() => setLoading(false));
+  }
+
+  useEffect(() => { if (schoolId) load(); }, [schoolId]);
+
+  async function correct(item: GenderReviewItem, gender: "Laki-laki" | "Perempuan") {
+    const key = `${item.entity_type}:${item.source_uuid}`;
+    setSavingKey(key);
+    try {
+      await apiFetch(`/api/analytics/gender-override?school_id=${encodeURIComponent(schoolId)}`, {
+        method: "PUT",
+        body: JSON.stringify({ entity_type: item.entity_type, source_uuid: item.source_uuid, gender }),
+      });
+      setItems((prev) => prev.filter((row) => !(row.entity_type === item.entity_type && row.source_uuid === item.source_uuid)));
+      setTotal((prev) => prev - 1);
+      onCorrected();
+    } finally {
+      setSavingKey(null);
+    }
+  }
+
+  if (loading) return null;
+  if (items.length === 0) return null;
+
+  return (
+    <div className="mb-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+      <div className="mb-3 flex items-center justify-between">
+        <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500">
+          Koreksi Jenis Kelamin Manual ({format(total)} perlu ditinjau)
+        </h3>
+      </div>
+      <p className="mb-3 text-xs text-slate-500">
+        Nama di bawah ini tidak memiliki jenis kelamin resmi dari School ID. Sistem menebak dari pola nama —
+        konfirmasi atau perbaiki sekali, tersimpan permanen dan tidak akan ditebak ulang.
+      </p>
+      <div className="max-h-80 space-y-2 overflow-y-auto">
+        {items.map((item) => {
+          const key = `${item.entity_type}:${item.source_uuid}`;
+          return (
+            <div
+              key={key}
+              className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-100 px-3 py-2 dark:border-slate-800"
+            >
+              <div>
+                <p className="text-sm font-medium">
+                  {item.name}
+                  <span className="ml-2 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold uppercase text-slate-500 dark:bg-slate-800">
+                    {item.entity_type === "student" ? "Siswa" : "Guru"}
+                  </span>
+                </p>
+                <p className="text-[11px] text-slate-400">
+                  {item.detail ? `${item.detail} · ` : ""}
+                  {item.suggested_gender
+                    ? `Tebakan: ${item.suggested_gender} (${Math.round(item.confidence * 100)}%)`
+                    : "Tidak dapat ditebak dari nama"}
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  disabled={savingKey === key}
+                  onClick={() => correct(item, "Laki-laki")}
+                  className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700 transition hover:bg-blue-100 disabled:opacity-50"
+                >
+                  Laki-laki
+                </button>
+                <button
+                  disabled={savingKey === key}
+                  onClick={() => correct(item, "Perempuan")}
+                  className="rounded-lg border border-pink-200 bg-pink-50 px-3 py-1.5 text-xs font-semibold text-pink-700 transition hover:bg-pink-100 disabled:opacity-50"
+                >
+                  Perempuan
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 function Skeleton() { return <div className="grid grid-cols-2 gap-3 md:grid-cols-4">{Array.from({length:12}).map((_,i)=><div key={i} className="h-28 animate-pulse rounded-xl bg-slate-100 dark:bg-slate-800" />)}</div>; }
 function format(value:number) { return value.toLocaleString("id-ID"); }
 function relativeTime(value:string|null) { if(!value) return "Belum tersinkron"; const seconds=Math.max(0,(Date.now()-new Date(value).getTime())/1000); if(seconds<60)return "Baru saja"; if(seconds<3600)return `${Math.floor(seconds/60)} menit lalu`; if(seconds<86400)return `${Math.floor(seconds/3600)} jam lalu`; return `${Math.floor(seconds/86400)} hari lalu`; }

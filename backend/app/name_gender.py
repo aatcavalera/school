@@ -1,25 +1,87 @@
 import re
-import math
 from collections import defaultdict
 from dataclasses import dataclass
 
 
+# Kamus nama depan Indonesia yang umum dipakai. Tidak lengkap (nama Indonesia
+# sangat beragam lintas daerah/agama/budaya), tapi jauh lebih luas dari daftar
+# awal supaya lebih sedikit nama yang jatuh ke "Belum dapat ditentukan".
 MALE = {
-    "abdul", "achmad", "aditya", "agus", "ahmad", "akbar", "aldi", "andra", "andri",
-    "andi", "arif", "arya", "bagas", "bambang", "bayu", "bima", "budi", "dedi", "deni", "dimas",
-    "eko", "fajar", "fauzan", "ferdi", "firmansyah", "gunawan", "hadi", "hendri", "herman", "ilham",
-    "imam", "irfan", "joko", "muhamad", "muhammad", "nurhadi", "putra", "rafi", "rahmat", "ramadhan",
-    "pranata", "rangga", "reynaldi", "ridho", "rizal", "rizki", "saputra", "syahrul", "teguh", "wahyudi", "zulkifli",
+    "abdul", "abdullah", "abdurrahman", "achmad", "adam", "adi", "aditya", "adnan", "afif", "agung",
+    "agus", "ahmad", "aji", "akbar", "aldi", "aldo", "alfian", "alfiansyah", "ali", "alif", "amin",
+    "anang", "andra", "andre", "andri", "andika", "andi", "angga", "anggara", "anwar", "ardi",
+    "ardian", "ardiansyah", "arga", "aril", "arief", "arif", "arifin", "aris", "aryo", "arya",
+    "asep", "aswin", "azhar", "bagas", "bagus", "bambang", "bayu", "bimo", "bima", "boy",
+    "budi", "bustanul", "chandra", "dafa", "danang", "dandi", "daniel", "danu", "danang",
+    "darma", "darmawan", "daud", "davin", "dedi", "deden", "dedy", "dendi", "deni", "denny",
+    "denny", "dermawan", "dian", "didik", "didi", "dimas", "dion", "dodi", "doni", "donny",
+    "doni", "duta", "eko", "elan", "endra", "endro", "erfan", "erik", "erick", "erlangga",
+    "ervan", "erwin", "fadhil", "fadillah", "fadil", "faisal", "faiz", "fajar", "farhan",
+    "fauzan", "fauzi", "febrian", "ferdi", "ferdinand", "fery", "firdaus", "firman", "firmansyah",
+    "galang", "galih", "gerry", "gilang", "gunawan", "guntur", "hadi", "hafiz", "hafizh", "hakim",
+    "hamdan", "hamzah", "hanif", "haris", "harsono", "harun", "hasan", "hasyim", "hendra",
+    "hendrawan", "hendri", "hendro", "hendry", "heri", "herman", "hidayat", "hilman", "husein",
+    "ibnu", "ibrahim", "iksan", "ikhsan", "ilham", "ilyas", "imam", "iman", "imron", "indra",
+    "indrawan", "iqbal", "irawan", "irfan", "irham", "irsyad", "irwan", "iskandar", "ismail",
+    "iswanto", "iwan", "jaka", "jamal", "jefri", "johan", "joko", "juanda", "junaidi", "juned",
+    "kadek", "kamal", "karim", "kevin", "khairul", "komang", "kurnia", "kurniawan", "lukman",
+    "made", "mahendra", "mahfud", "malik", "mamat", "marwan", "maulana", "maulid", "miftah",
+    "misbah", "muchtar", "muhaimin", "muhamad", "muhammad", "mukhlis", "nanang", "narto",
+    "naufal", "ngadiman", "nizam", "noval", "novan", "nugroho", "nugraha", "nur", "nurdin",
+    "nurhadi", "nyoman", "oki", "okta", "pandu", "panji", "parman", "priyanto", "pranata",
+    "prasetyo", "priyo", "purnomo", "putra", "rachmad", "rachman", "radit", "raditya", "rafael",
+    "rafi", "rafly", "rahman", "rahmad", "rahmat", "raihan", "raka", "rama", "ramadhan", "rangga",
+    "rasyid", "ravi", "raymond", "reihan", "renaldi", "reynaldi", "ricky", "ridho", "ridwan",
+    "rifai", "rifki", "rio", "risky", "rivaldo", "rivai", "riyanto", "rizal", "rizki", "rizky",
+    "robby", "robi", "roby", "rohman", "romi", "ronald", "ronny", "roni", "rudi", "rudy",
+    "sahrul", "salim", "samsul", "sandi", "sandy", "santoso", "saputra", "septian", "setiawan",
+    "setiyo", "sigit", "slamet", "soni", "subagio", "subur", "sugeng", "suhaimi", "suhardi",
+    "sujarwo", "sukamto", "sukirno", "sulaiman", "supardi", "supriyanto", "surya", "susanto",
+    "sutrisno", "sutopo", "syahid", "syahrizal", "syahrul", "syaiful", "syamsul", "syarif",
+    "taufan", "taufik", "teddy", "teguh", "teuku", "tio", "tirta", "tomi", "tomy", "tony",
+    "toto", "tri", "tulus", "umar", "usman", "vicky", "wahid", "wahyu", "wahyudi", "wawan",
+    "widodo", "widianto", "wijaya", "wildan", "willy", "wira", "wisnu", "yadi", "yahya",
+    "yanto", "yayan", "yoga", "yogi", "yudha", "yudi", "yudistira", "yudo", "yulianto",
+    "yusuf", "yustinus", "zacky", "zaenal", "zaenudin", "zaidan", "zainal", "zainudin",
+    "zaki", "zakaria", "zulfikar", "zulkarnain", "zulkifli",
 }
 FEMALE = {
-    "aisyah", "anisa", "annisa", "ayu", "bella", "cahyaning", "dewi", "fitri", "fitria", "indah",
-    "cahyani", "dian", "kartika", "khairunnisa", "laila", "lestari", "maharani", "melati", "mutiara", "nadia", "nabila", "novita",
-    "nuraini", "nurhayati", "nurul", "permata", "putri", "rahma", "rahmi", "ramadhani", "ratna", "rina", "safitri", "salsabila", "sari",
-    "siti", "sri", "syafitri", "tiara", "vina", "wulandari", "yanti", "yuliana", "zahra", "zahrani",
+    "adinda", "adelia", "adelina", "afifah", "aida", "aisyah", "alifia", "alika", "amanda",
+    "amara", "amelia", "amelina", "andini", "anggi", "anggraeni", "anggraini", "angelina",
+    "anisa", "anita", "annisa", "aprilia", "aprillia", "ari", "arum", "asri", "astrid", "astuti",
+    "ayu", "ayudia", "ayunda", "azizah", "azzahra", "bela", "bella", "berliana", "bunga",
+    "cahyani", "cahyaning", "cantika", "cindy", "citra", "clara", "danti", "desi", "desy",
+    "devi", "devina", "dewi", "diah", "diana", "diani", "dian", "dinda", "dini", "diva",
+    "dwi", "elisa", "elisabeth", "elvina", "endang", "erika", "erni", "eva", "evi", "farah",
+    "farida", "fatimah", "fatma", "fauziah", "febi", "febrianti", "febriyanti", "fifi", "fina",
+    "fitri", "fitria", "fitriani", "fitriyani", "gita", "hana", "hanifah", "hasna", "helena",
+    "hesti", "ida", "ika", "iklima", "ima", "indah", "indriani", "intan", "irma", "isna",
+    "juwita", "kania", "karina", "karmila", "kartika", "kasih", "kayla", "khadijah",
+    "khairunnisa", "khoirunnisa", "laila", "laksmi", "lala", "lastri", "latifah", "laura",
+    "lelia", "lestari", "lia", "lidya", "lilis", "lina", "linda", "listya", "lisa", "lita",
+    "lusi", "lutfia", "maharani", "mala", "mardiana", "maria", "marlina", "marsha", "martha",
+    "maya", "mayang", "mega", "megawati", "melani", "melati", "melinda", "mira", "mirna",
+    "monica", "mulia", "murni", "mutia", "mutiara", "nabila", "nadhira", "nadia", "nadine",
+    "nafisa", "naila", "nanda", "natalia", "natasya", "naura", "nazwa", "nia", "nila",
+    "nindya", "nita", "novi", "novia", "novita", "nur", "nuraini", "nurhalimah", "nurhasanah",
+    "nurhayati", "nuri", "nurjannah", "nurlaila", "nurul", "nyimas", "octavia", "okta",
+    "olivia", "pertiwi", "prasasti", "priska", "puji", "purnama", "puspa", "puspita",
+    "putri", "queen", "rachel", "rahayu", "rahma", "rahmadhani", "rahmawati", "rahmi",
+    "raisa", "ramadhani", "ramona", "ratih", "ratna", "ratu", "regina", "renata", "reni",
+    "resti", "retno", "rika", "rina", "rini", "risma", "rita", "riri", "riska", "rista",
+    "riza", "rizka", "rosa", "rosita", "safira", "safitri", "sagita", "salma", "salsabila",
+    "salwa", "sandra", "santi", "sari", "sarah", "seli", "septia", "septiani", "seruni",
+    "shafira", "shanty", "sherly", "shinta", "silvia", "siska", "siti", "sonia", "sri",
+    "sulastri", "susanti", "susi", "syafira", "syafitri", "syakira", "tamara", "tania",
+    "tanti", "tarisa", "tasya", "tia", "tiara", "titi", "tri", "tuti", "ulfa", "ulfah",
+    "umi", "utami", "vania", "vanya", "vera", "vina", "viona", "vivi", "wahyuni", "wati",
+    "widya", "wiwik", "wulan", "wulandari", "yani", "yanti", "yayuk", "yeni", "yesi",
+    "yeti", "yohana", "yolanda", "yuana", "yudith", "yulia", "yuliana", "yulianti", "yuni",
+    "yunita", "yuyun", "zahra", "zahrani", "zaskia", "zulfa", "zaskiah",
 }
-MALE_SUFFIXES = ("syah", "wan", "man", "din")
-FEMALE_SUFFIXES = ("wati", "ningsih", "sari", "lesti", "riana", "yanti")
-NEUTRAL = {"dwi", "eka", "tri", "nur", "cahya", "fitra", "rahayu", "wahyu", "agung"}
+MALE_SUFFIXES = ("syah", "wan", "man", "din", "yudi", "put", "putra")
+FEMALE_SUFFIXES = ("wati", "ningsih", "sari", "lesti", "riana", "yanti", "ningtyas", "ulfa", "putri")
+NEUTRAL = {"dwi", "eka", "tri", "nur", "cahya", "fitra", "rahayu", "wahyu", "agung", "bintang", "cahaya"}
 NAME_OVERRIDES = {
     "abd rahman ibrahim": "Laki-laki",
     "abd rahman abdullah": "Laki-laki",
@@ -67,7 +129,9 @@ def estimate_gender(name: str | None) -> GenderEstimate:
                 female += .9
     total = male + female
     if total < 2.0 or abs(male - female) < 1.4:
-        return GenderEstimate(None, 0.0 if not total else round(max(male, female) / total, 2))
+        # Tidak cukup sinyal untuk memutuskan - confidence harus 0, bukan rasio sinyal
+        # yang lemah itu sendiri (dulu bisa melaporkan confidence tinggi tanpa label).
+        return GenderEstimate(None, 0.0)
     label = "Laki-laki" if male > female else "Perempuan"
     confidence = min(.98, .65 + abs(male - female) / max(total, 1) * .3)
     return GenderEstimate(label, round(confidence, 2))
