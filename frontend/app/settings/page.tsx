@@ -16,25 +16,52 @@ type SyncRun = {
   status: string;
 };
 
+type SchoolHours = { school_id: string; school_start_time: string | null; late_cutoff_time: string | null };
+
 export default function SettingsPage() {
   const [params, setParams] = useState<ParamRow[]>([]);
   const [runs, setRuns] = useState<SyncRun[]>([]);
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [pwMsg, setPwMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
+  const [hours, setHours] = useState<SchoolHours | null>(null);
+  const [startTime, setStartTime] = useState("");
+  const [cutoffTime, setCutoffTime] = useState("");
+  const [hoursMsg, setHoursMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
 
   async function refresh() {
-    const [p, syncRuns] = await Promise.all([
+    const [p, syncRuns, schoolHours] = await Promise.all([
       apiFetch("/api/settings/parameters"),
       apiFetch("/api/sync/runs"),
+      apiFetch("/api/settings/school-hours").catch(() => null),
     ]);
     setParams(p);
     setRuns(syncRuns);
+    if (schoolHours) {
+      setHours(schoolHours);
+      setStartTime(schoolHours.school_start_time || "");
+      setCutoffTime(schoolHours.late_cutoff_time || "");
+    }
   }
 
   useEffect(() => {
     refresh().catch(() => {});
   }, []);
+
+  async function saveHours(e: React.FormEvent) {
+    e.preventDefault();
+    setHoursMsg(null);
+    try {
+      await apiFetch("/api/settings/school-hours", {
+        method: "PUT",
+        body: JSON.stringify({ school_start_time: startTime, late_cutoff_time: cutoffTime }),
+      });
+      setHoursMsg({ type: "ok", text: "Jam sekolah berhasil disimpan." });
+      await refresh();
+    } catch (err: any) {
+      setHoursMsg({ type: "err", text: err.message });
+    }
+  }
 
   async function saveParam(row: ParamRow) {
     await apiFetch("/api/settings/parameters", { method: "PUT", body: JSON.stringify(row) });
@@ -116,7 +143,37 @@ export default function SettingsPage() {
 
         <div className="space-y-4">
           <div className="rounded-xl bg-white p-5 shadow-card dark:bg-slate-900">
-            <h2 className="mb-3 text-base font-semibold">Parameter Jam Sekolah</h2>
+            <h2 className="mb-1 text-base font-semibold">Jam Sekolah</h2>
+            <p className="mb-3 text-xs text-slate-500">
+              Dipakai untuk menghitung status Terlambat dari jam clock-in siswa (School ID tidak selalu
+              mengirim status telat sebagai nilai terpisah).
+            </p>
+            <form onSubmit={saveHours} className="space-y-3">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-500">Jam Masuk Sekolah</label>
+                <input
+                  type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)}
+                  required className="input w-full"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-500">Batas Terlambat</label>
+                <input
+                  type="time" value={cutoffTime} onChange={(e) => setCutoffTime(e.target.value)}
+                  required className="input w-full"
+                />
+              </div>
+              <button type="submit" className="btn-primary w-full">Simpan Jam Sekolah</button>
+              {hoursMsg && (
+                <div className={`rounded-lg px-3 py-2 text-sm ${hoursMsg.type === "ok" ? "bg-green-50 text-green-700" : "bg-red-50 text-red-600"}`}>
+                  {hoursMsg.text}
+                </div>
+              )}
+            </form>
+          </div>
+
+          <div className="rounded-xl bg-white p-5 shadow-card dark:bg-slate-900">
+            <h2 className="mb-3 text-base font-semibold">Parameter Jam Sekolah (Legacy)</h2>
             <div className="space-y-3">
               {params.map((p) => (
                 <div key={p.key}>

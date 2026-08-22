@@ -2,11 +2,17 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 import { apiFetch } from "@/lib/api";
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
+  const [role, setRole] = useState<string | null>(null);
+
+  useEffect(() => {
+    apiFetch("/api/auth/me").then((me) => setRole(me.role)).catch(() => {});
+  }, []);
 
   async function logout() {
     await apiFetch("/api/auth/logout", { method: "POST" }).catch(() => {});
@@ -45,6 +51,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             {navItem("/dashboard", "Absensi")}
             {navItem("/operations", "Operasional")}
             {navItem("/settings", "Settings")}
+            {role && ["admin", "super_admin"].includes(role) && navItem("/admin/users", "Kelola User")}
             <button
               onClick={logout}
               className="ml-2 rounded-lg px-3 py-1.5 text-sm font-medium text-blue-100/80 transition hover:bg-white/10 hover:text-white"
