@@ -1,4 +1,5 @@
 import datetime as dt
+import re
 from collections import Counter, defaultdict
 from zoneinfo import ZoneInfo
 
@@ -8,11 +9,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models_multitenant import School, SchoolYearSource, SyncedStudent, SyncedStudentAttendance
 from app.config import settings
 
+_JENJANG_PREFIX = re.compile(r"^[A-Za-z]+")
+
 
 def jenjang_from_class(name: str | None) -> str:
+    """Level prefix of a class name, e.g. 'XI.7' -> 'XI', 'XII-A' -> 'XII'.
+
+    Class names vary by school ('X.1', 'VII-A', 'XII IPA 2', ...) - only the
+    leading run of letters is the level, whatever separator follows it.
+    """
     if not name:
         return "-"
-    return name.split("-")[0].strip()
+    match = _JENJANG_PREFIX.match(name.strip())
+    return match.group(0).upper() if match else name.strip()
 
 
 def normalize_status(
@@ -34,6 +43,34 @@ def normalize_status(
         "izin": "Izin", "leave": "Izin", "sakit": "Sakit", "sick": "Sakit",
         "terlambat": "Terlambat",
     }.get(value, "Alpha")
+
+
+def _hhmm(value: str | None) -> str | None:
+    if not value:
+        return None
+    return value[-8:-3] if "T" in value else value[:5]
+
+
+def classify_status(
+    raw_status: str | None,
+    clock_in_time: str | None,
+    attendance_date: dt.date | None,
+    timezone_name: str,
+    late_cutoff_time: str | None,
+) -> str:
+    """normalize_status(), then upgrade Hadir -> Terlambat by clock-in time.
+
+    School ID rarely sends a distinct "terlambat" status - most schools only
+    report Hadir/Absen/Belum Clock In. Lateness has to be derived from
+    clock_in_time against the school's configured cutoff (Settings). Without
+    a cutoff configured, everyone present stays "Hadir" - we cannot guess.
+    """
+    label = normalize_status(raw_status, attendance_date, timezone_name)
+    if label == "Hadir" and late_cutoff_time:
+        clock_in = _hhmm(clock_in_time)
+        if clock_in and clock_in > late_cutoff_time:
+            return "Terlambat"
+    return label
 
 
 async def synced_filters(db: AsyncSession, school_id: str) -> dict:
@@ -83,7 +120,8 @@ async def build_synced_dashboard(
     if allowed_classes: attendance_stmt = attendance_stmt.where(SyncedStudentAttendance.class_name.in_(allowed_classes))
     elif total_siswa == 0: attendance_stmt = attendance_stmt.where(False)
     rows = (await db.execute(attendance_stmt)).scalars().all()
-    counts = Counter(normalize_status(row.status, row.attendance_date, school_timezone) for row in rows)
+    late_cutoff = school.late_cutoff_time if school else None
+    counts = Counter(classify_status(row.status, row.clock_in_time, row.attendance_date, school_timezone, late_cutoff) for row in rows)
     for key in ("Hadir", "Terlambat", "Izin", "Sakit", "Alpha", "Belum Absen Masuk"): counts.setdefault(key, 0)
     hadir = counts["Hadir"] + counts["Terlambat"]
     denom = max(len(rows), 1)
@@ -91,15 +129,15 @@ async def build_synced_dashboard(
 
     trend_start = tanggal - dt.timedelta(days=29)
     trend_rows = (await db.execute(select(
-        SyncedStudentAttendance.attendance_date, SyncedStudentAttendance.status, func.count()
+        SyncedStudentAttendance.attendance_date, SyncedStudentAttendance.status, SyncedStudentAttendance.clock_in_time
     ).where(
         SyncedStudentAttendance.school_id == school_id,
         SyncedStudentAttendance.attendance_date.between(trend_start, tanggal),
         SyncedStudentAttendance.class_name.in_(allowed_classes) if allowed_classes else False,
-    ).group_by(SyncedStudentAttendance.attendance_date, SyncedStudentAttendance.status)
-    )).all()
+    ))).all()
     daily = defaultdict(Counter)
-    for day, status, count in trend_rows: daily[day][normalize_status(status, day, school_timezone)] += count
+    for day, status, clock_in_time in trend_rows:
+        daily[day][classify_status(status, clock_in_time, day, school_timezone, late_cutoff)] += 1
     trend = []
     for day in sorted(daily):
         day_total = sum(daily[day].values()); day_present = daily[day]["Hadir"] + daily[day]["Terlambat"]
@@ -107,7 +145,7 @@ async def build_synced_dashboard(
 
     student_totals = Counter(s.class_name for s in students if s.class_name)
     class_status = defaultdict(Counter)
-    for row in rows: class_status[row.class_name][normalize_status(row.status, row.attendance_date, school_timezone)] += 1
+    for row in rows: class_status[row.class_name][classify_status(row.status, row.clock_in_time, row.attendance_date, school_timezone, late_cutoff)] += 1
     per_kelas = []
     for class_name, total in student_totals.items():
         present = class_status[class_name]["Hadir"] + class_status[class_name]["Terlambat"]
@@ -128,8 +166,29 @@ async def build_synced_dashboard(
     ).group_by(SyncedStudentAttendance.student_name, SyncedStudentAttendance.class_name)
      .order_by(func.count().desc()).limit(10))).all()
     top_alpha = [{"nama": name, "kelas": class_name, "hari": count} for name, class_name, count in alpha_rows]
-    belum_masuk = [{"nama": row.student_name, "kelas": row.class_name} for row in rows if normalize_status(row.status, row.attendance_date, school_timezone) == "Belum Absen Masuk"]
-    belum_pulang = [{"nama": row.student_name, "kelas": row.class_name} for row in rows if normalize_status(row.status, row.attendance_date, school_timezone) in {"Hadir", "Terlambat"} and not row.clock_out_time]
+
+    top_terlambat: list[dict] = []
+    if late_cutoff:
+        # Terlambat tidak selalu jadi status tersendiri di sumber - harus
+        # dihitung per baris dari clock_in_time, jadi tidak bisa GROUP BY di SQL.
+        hadir_rows = (await db.execute(select(
+            SyncedStudentAttendance.student_name, SyncedStudentAttendance.class_name,
+            SyncedStudentAttendance.attendance_date, SyncedStudentAttendance.clock_in_time,
+        ).where(
+            SyncedStudentAttendance.school_id == school_id,
+            func.lower(SyncedStudentAttendance.status).in_(["hadir", "present"]),
+            SyncedStudentAttendance.clock_in_time.isnot(None),
+        ))).all()
+        late_counter: Counter = Counter()
+        for name, class_name, attendance_date, clock_in_time in hadir_rows:
+            if classify_status("hadir", clock_in_time, attendance_date, school_timezone, late_cutoff) == "Terlambat":
+                late_counter[(name, class_name)] += 1
+        top_terlambat = [
+            {"nama": name, "kelas": class_name, "hari": count}
+            for (name, class_name), count in late_counter.most_common(10)
+        ]
+    belum_masuk = [{"nama": row.student_name, "kelas": row.class_name} for row in rows if classify_status(row.status, row.clock_in_time, row.attendance_date, school_timezone, late_cutoff) == "Belum Absen Masuk"]
+    belum_pulang = [{"nama": row.student_name, "kelas": row.class_name} for row in rows if classify_status(row.status, row.clock_in_time, row.attendance_date, school_timezone, late_cutoff) in {"Hadir", "Terlambat"} and not row.clock_out_time]
 
     def bucket_time(value, boundaries):
         if not value: return None
@@ -151,13 +210,19 @@ async def build_synced_dashboard(
     if belum_masuk: attention.append(f"{len(belum_masuk)} siswa belum memiliki data check-in; status ini belum dianggap Alpha.")
     if belum_pulang: attention.append(f"{len(belum_pulang)} siswa hadir tanpa data absen pulang.")
     if per_kelas: attention.append(f"Kelas {per_kelas[-1]['kelas']} memiliki persentase kehadiran terendah ({per_kelas[-1]['persentase']}%).")
+    if not late_cutoff: attention.append("Batas jam terlambat belum diatur di Settings - status Terlambat belum bisa dihitung.")
     return {
         "tanggal": tanggal.isoformat(),
-        "ringkasan": {"jam_masuk_sekolah": "-", "batas_terlambat": "-", "jam_pulang_sekolah": "-", "tingkat_kehadiran": tingkat, "siswa_masih_di_sekolah": len(belum_pulang), "total_siswa_hadir": hadir},
+        "ringkasan": {
+            "jam_masuk_sekolah": (school.school_start_time if school else None) or "-",
+            "batas_terlambat": late_cutoff or "-",
+            "jam_pulang_sekolah": "-",
+            "tingkat_kehadiran": tingkat, "siswa_masih_di_sekolah": len(belum_pulang), "total_siswa_hadir": hadir,
+        },
         "kartu": {"total_siswa": total_siswa, "record_teramati": len(rows), "hadir": counts["Hadir"], "terlambat": counts["Terlambat"], "izin": counts["Izin"], "sakit": counts["Sakit"], "alpha": counts["Alpha"], "belum_absen_pulang": len(belum_pulang), "belum_absen_masuk": len(belum_masuk)},
         "komposisi_kehadiran": composition, "tingkat_kehadiran": {"persen": tingkat, "rating": rating},
         "trend_30_hari": trend, "per_jenjang": per_jenjang, "per_kelas": per_kelas,
-        "top_terlambat": [], "top_alpha": top_alpha,
+        "top_terlambat": top_terlambat, "top_alpha": top_alpha,
         "siswa_belum_absen_masuk": belum_masuk, "siswa_belum_absen_pulang": belum_pulang,
         "distribusi_jam_kedatangan": [{"label": label, "jumlah": arrival_counts[label]} for label, _, _ in arrivals],
         "distribusi_jam_pulang": [{"label": label, "jumlah": departure_counts[label]} for label, _, _ in departures],

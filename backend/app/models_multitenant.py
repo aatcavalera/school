@@ -12,15 +12,34 @@ def new_uuid() -> str:
     return str(uuid.uuid4())
 
 
+SCHOOL_CATEGORIES = ("SMA", "SMK", "SMP", "SD", "Lainnya")
+
+
 class School(Base):
     __tablename__ = "schools"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     code: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(255))
+    category: Mapped[str | None] = mapped_column(String(16), index=True)
     timezone: Mapped[str] = mapped_column(String(64), default="Asia/Makassar")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    # Jam masuk & batas terlambat khusus sekolah ini - dipakai untuk menurunkan
+    # status "Terlambat" dari jam clock-in, karena School ID tidak selalu
+    # mengirim status telat sebagai nilai terpisah (hanya Hadir/Absen/dst).
+    school_start_time: Mapped[str | None] = mapped_column(String(5))
+    late_cutoff_time: Mapped[str | None] = mapped_column(String(5))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class UserDiknasScope(Base):
+    """A diknas user's oversight scope: every active school in these categories."""
+
+    __tablename__ = "user_diknas_scopes"
+    __table_args__ = (UniqueConstraint("user_id", "category", name="uq_user_diknas_scope"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    category: Mapped[str] = mapped_column(String(16), index=True)
 
 
 class SchoolConnection(Base):

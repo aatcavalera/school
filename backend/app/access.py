@@ -6,11 +6,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.models import User
-from app.models_multitenant import School, UserSchoolAccess
+from app.models_multitenant import School, UserDiknasScope, UserSchoolAccess
 from app.security import get_current_username
 
 
-GLOBAL_ROLES = {"admin", "super_admin", "operator"}
+# "cluster" = tingkat tertinggi: melihat semua sekolah terdaftar di skul.id.
+GLOBAL_ROLES = {"admin", "super_admin", "operator", "cluster"}
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,15 @@ async def get_current_user(
 async def accessible_school_ids(db: AsyncSession, user: CurrentUser) -> list[str]:
     if user.role in GLOBAL_ROLES:
         return list((await db.execute(select(School.id).where(School.is_active.is_(True)))).scalars())
+    if user.role == "diknas":
+        categories = list((await db.execute(select(UserDiknasScope.category).where(
+            UserDiknasScope.user_id == user.id
+        ))).scalars())
+        if not categories:
+            return []
+        return list((await db.execute(select(School.id).where(
+            School.is_active.is_(True), School.category.in_(categories)
+        ))).scalars())
     return list((await db.execute(select(UserSchoolAccess.school_id).where(
         UserSchoolAccess.user_id == user.id
     ))).scalars())

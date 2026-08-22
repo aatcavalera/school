@@ -415,7 +415,7 @@ export default function DashboardPage() {
             </Panel>
 
             <Panel title="Top 10 Siswa Terlambat" className="xl:col-span-3">
-              <RankTable rows={data.top_terlambat} valueKey="menit" valueLabel="Menit" color="text-orange-600" />
+              <RankTable rows={data.top_terlambat} valueKey="hari" valueLabel="Hari" color="text-orange-600" />
             </Panel>
             <Panel title="Top 10 Siswa Alpha" className="xl:col-span-3">
               <RankTable rows={data.top_alpha} valueKey="hari" valueLabel="Hari" color="text-red-600" />
