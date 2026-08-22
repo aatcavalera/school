@@ -155,6 +155,7 @@ function Portal({ data, insights, schoolId, onCorrected }: { data: Analytics; in
         <a href={`/api/analytics/attendance.csv?school_id=${encodeURIComponent(schoolId)}&days=366`} className="btn-primary inline-flex">Unduh CSV Presensi</a>
         <p className="mt-3 text-[11px] text-slate-400">Maksimum 366 hari · akses mengikuti sekolah user</p>
       </Panel>
+      <RecapDownloadPanel schoolId={schoolId} />
     </section>
 
     <SectionHeading eyebrow="Operasional Data" title="Kesehatan sinkronisasi" />
@@ -176,6 +177,49 @@ function CompactLegend({ data }: { data:Datum[] }) { return <div className="spac
 function Progress({ label, value, detail }: { label:string; value:number; detail:string }) { return <div><div className="mb-1 flex justify-between text-xs"><span className="font-medium">{label}</span><span className="text-slate-400">{detail} · {value}%</span></div><div className="h-2 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800"><div className={`h-full rounded-full ${value >= 90 ? "bg-emerald-500" : value >= 60 ? "bg-amber-500" : "bg-red-500"}`} style={{width:`${value}%`}} /></div></div>; }
 function StatusDot({ ok }: { ok:boolean }) { return <span title={ok ? "Terpetakan" : "Belum terpetakan"} className={`inline-block h-2.5 w-2.5 rounded-full ${ok ? "bg-emerald-500" : "bg-slate-300"}`} />; }
 function DataQualityNotice({ title, message }: { title:string; message:string }) { return <div className="mb-4 flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-100"><span className="rounded-full bg-amber-200 px-2 py-0.5 text-xs font-bold text-amber-800">!</span><div><p className="text-sm font-bold">{title}</p><p className="mt-1 text-xs leading-relaxed opacity-80">{message}</p></div></div>; }
+
+function defaultSemesterStart(): string {
+  const now = new Date();
+  const year = now.getFullYear();
+  // Semester ganjil: Juli-Des, semester genap: Jan-Jun.
+  const start = now.getMonth() >= 6 ? new Date(year, 6, 1) : new Date(year, 0, 1);
+  return start.toISOString().slice(0, 10);
+}
+
+function RecapDownloadPanel({ schoolId }: { schoolId: string }) {
+  const [start, setStart] = useState(defaultSemesterStart());
+  const [end, setEnd] = useState(new Date().toISOString().slice(0, 10));
+
+  const url = `/api/analytics/attendance-recap.csv?school_id=${encodeURIComponent(schoolId)}&start=${start}&end=${end}`;
+  const invalid = !start || !end || end < start;
+
+  return (
+    <Panel title="Rekap Kehadiran per Semester" className="xl:col-span-12">
+      <p className="mb-4 text-sm text-slate-500">
+        Rekap jumlah Hadir/Terlambat/Sakit/Izin/Alpa per siswa dalam rentang tanggal - untuk kebutuhan penilaian
+        guru per semester. Tidak disimpan di server, dibuat langsung saat diunduh.
+      </p>
+      <div className="flex flex-wrap items-end gap-3">
+        <div>
+          <label className="mb-1 block text-xs font-medium text-slate-500">Dari Tanggal</label>
+          <input type="date" value={start} onChange={(e) => setStart(e.target.value)} className="input" />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-medium text-slate-500">Sampai Tanggal</label>
+          <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} className="input" />
+        </div>
+        {invalid ? (
+          <span className="rounded-lg bg-slate-100 px-4 py-1.5 text-sm font-semibold text-slate-400 dark:bg-slate-800">
+            Unduh CSV Rekap
+          </span>
+        ) : (
+          <a href={url} className="btn-primary inline-flex">Unduh CSV Rekap</a>
+        )}
+      </div>
+      {invalid && <p className="mt-2 text-xs text-red-500">Tanggal akhir harus sama atau setelah tanggal awal.</p>}
+    </Panel>
+  );
+}
 
 type GenderReviewItem = { entity_type: "student" | "teacher"; source_uuid: string; name: string; detail: string | null; suggested_gender: string | null; confidence: number };
 

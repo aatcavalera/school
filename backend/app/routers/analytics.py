@@ -1,5 +1,7 @@
 import csv
+import datetime as dt
 import io
+from collections import Counter
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -27,7 +29,7 @@ from app.models_multitenant import (
     SyncedSubject,
     SyncedTeacher,
 )
-from app.routers.dashboard_synced import normalize_status
+from app.routers.dashboard_synced import classify_status, jenjang_from_class, normalize_status
 from app.name_gender import AdaptiveGenderClassifier, operator_samples
 
 router = APIRouter(prefix="/api/analytics", tags=["analytics"])
@@ -464,4 +466,70 @@ async def attendance_csv(
     return Response(
         content=output.getvalue(), media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="presensi-{selected}-{latest or "kosong"}.csv"', "Cache-Control": "no-store"},
+    )
+
+
+@router.get("/attendance-recap.csv")
+async def attendance_recap_csv(
+    start: dt.date = Query(...),
+    end: dt.date = Query(...),
+    school_id: str | None = Query(default=None),
+    jenjang: str | None = Query(default=None),
+    kelas: str | None = Query(default=None),
+    user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Rekap kehadiran per siswa untuk kebutuhan penilaian guru per semester."""
+    if end < start:
+        raise HTTPException(status_code=400, detail="Tanggal akhir harus setelah tanggal awal")
+    if (end - start).days > 366:
+        raise HTTPException(status_code=400, detail="Rentang tanggal maksimum 366 hari")
+
+    selected = await resolve_school_id(db, user, school_id)
+    school = await db.get(School, selected)
+    late_cutoff = school.late_cutoff_time if school else None
+
+    active_student = (SyncedStudent.school_id == selected, SyncedStudent.is_deleted.is_(False))
+    student_stmt = select(SyncedStudent.name, SyncedStudent.class_name).where(*active_student)
+    if kelas and kelas != "Semua":
+        student_stmt = student_stmt.where(SyncedStudent.class_name == kelas)
+    students = (await db.execute(student_stmt)).all()
+    if jenjang and jenjang != "Semua":
+        students = [(name, class_name) for name, class_name in students if jenjang_from_class(class_name) == jenjang]
+    allowed_classes = {class_name for _, class_name in students if class_name}
+
+    STATUS_COLUMNS = ["Hadir", "Terlambat", "Sakit", "Izin", "Alpha"]
+    recap: dict[tuple[str, str], Counter] = {
+        (name, class_name or "-"): Counter() for name, class_name in students
+    }
+
+    attendance_stmt = select(
+        SyncedStudentAttendance.student_name, SyncedStudentAttendance.class_name,
+        SyncedStudentAttendance.status, SyncedStudentAttendance.clock_in_time,
+        SyncedStudentAttendance.attendance_date,
+    ).where(
+        SyncedStudentAttendance.school_id == selected,
+        SyncedStudentAttendance.attendance_date.between(start, end),
+    )
+    if allowed_classes:
+        attendance_stmt = attendance_stmt.where(SyncedStudentAttendance.class_name.in_(allowed_classes))
+    rows = (await db.execute(attendance_stmt)).all()
+    for name, class_name, status, clock_in_time, attendance_date in rows:
+        label = classify_status(status, clock_in_time, attendance_date, school.timezone if school else "Asia/Makassar", late_cutoff)
+        if label == "Belum Absen Masuk":
+            continue
+        key = (name, class_name or "-")
+        recap.setdefault(key, Counter())[label] += 1
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Nama Siswa", "Kelas", "Jumlah Hadir", "Jumlah Terlambat", "Jumlah Sakit", "Jumlah Izin", "Jumlah Alpa"])
+    for (name, class_name), counts in sorted(recap.items(), key=lambda item: (item[0][1], item[0][0])):
+        writer.writerow([name, class_name, counts["Hadir"], counts["Terlambat"], counts["Sakit"], counts["Izin"], counts["Alpha"]])
+    return Response(
+        content=output.getvalue(), media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="rekap-kehadiran-{selected}-{start}_{end}.csv"',
+            "Cache-Control": "no-store",
+        },
     )
