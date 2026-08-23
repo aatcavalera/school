@@ -18,6 +18,7 @@ from app.models_multitenant import (
     SyncRun,
     SyncedClass,
     SyncedClassAttendance,
+    SyncedSchedule,
     SyncedStudent,
     SyncedSubject,
     SyncedTeacher,
@@ -144,6 +145,8 @@ class SyncService:
                 counts = await self._sync_daily_attendance(client, school_id, scope or {})
             elif domain == "class_attendances":
                 counts = await self._sync_class_attendances(client, school_id, scope or {})
+            elif domain == "schedules":
+                counts = await self._sync_schedules(client, school_id, scope or {})
             else:
                 school_year_uuid = (scope or {}).get("school_year_uuid")
                 if domain == "students" and not school_year_uuid:
@@ -289,6 +292,74 @@ class SyncService:
                 stmt = pg_insert(SyncedClassAttendance).values(changed)
                 stmt = stmt.on_conflict_do_update(
                     constraint="uq_synced_class_attendance_source",
+                    set_={c: getattr(stmt.excluded, c) for c in changed[0] if c not in {"id", "school_id", "source_uuid"}},
+                )
+                await db.execute(stmt)
+                await db.commit()
+        return counts
+
+    async def _sync_schedules(self, client, school_id: str, scope: dict) -> dict:
+        """Jadwal pelajaran, per kelas (endpoint School ID discovered to be
+        per-class, not a flat paginated list - see client.fetch_schedules)."""
+        year = await self._year(school_id, scope.get("school_year_uuid"))
+        async with SessionLocal() as db:
+            classes = (await db.execute(select(SyncedClass.source_uuid, SyncedClass.name).where(
+                SyncedClass.school_id == school_id, SyncedClass.is_deleted.is_(False)
+            ))).all()
+        totals = {"seen": 0, "inserted": 0, "updated": 0, "unchanged": 0}
+        incomplete_years = 0
+        for class_uuid, class_name in classes:
+            rows, is_complete = await asyncio.to_thread(
+                client.fetch_schedules, class_uuid=class_uuid, school_year_id=year.source_id
+            )
+            if not is_complete:
+                incomplete_years += 1
+            normalized = [self._normalize_schedule(school_id, year.source_uuid, class_uuid, class_name, row) for row in rows]
+            counts = await self._upsert_schedules(school_id, normalized)
+            for key in totals:
+                totals[key] += counts[key]
+            await asyncio.sleep(0.05)
+        if incomplete_years == len(classes) and classes:
+            raise ValueError("Tahun ajaran belum lengkap menurut School ID (school_year_status.is_data_complete=false) untuk semua kelas")
+        await self._checkpoint(school_id, "schedules", year.source_uuid, totals)
+        return totals
+
+    def _normalize_schedule(self, school_id: str, year_uuid: str, class_uuid: str, class_name: str, row: dict) -> dict:
+        approved = dict(row)
+        return {
+            "school_id": school_id, "source_uuid": str(row.get("uuid") or f"{class_uuid}:{row.get('day') or row.get('day_of_week')}:{row.get('session') or row.get('session_number')}"),
+            "school_year_uuid": year_uuid,
+            "day_of_week": str(row.get("day") or row.get("day_of_week") or "") or None,
+            "session_label": str(row.get("session") or row.get("session_number") or "") or None,
+            "start_time": str(row.get("start_time"))[:8] if row.get("start_time") else None,
+            "end_time": str(row.get("end_time"))[:8] if row.get("end_time") else None,
+            "class_source_uuid": class_uuid, "class_name": class_name,
+            "subject_name": str(row.get("subject") or "") or None,
+            "teacher_name": str(row.get("teacher_name") or row.get("teacher") or "") or None,
+            "source_updated_at": parse_datetime(row.get("updated_at")),
+            "fingerprint": fingerprint(approved), "is_deleted": False,
+            "last_synced_at": datetime.now(timezone.utc),
+        }
+
+    async def _upsert_schedules(self, school_id: str, rows: list[dict]) -> dict:
+        counts = {"seen": len(rows), "inserted": 0, "updated": 0, "unchanged": 0}
+        if not rows:
+            return counts
+        uuids = [row["source_uuid"] for row in rows]
+        async with SessionLocal() as db:
+            existing = dict((await db.execute(select(
+                SyncedSchedule.source_uuid, SyncedSchedule.fingerprint
+            ).where(SyncedSchedule.school_id == school_id, SyncedSchedule.source_uuid.in_(uuids)))).all())
+            changed = []
+            for row in rows:
+                old = existing.get(row["source_uuid"])
+                if old is None: counts["inserted"] += 1; changed.append(row)
+                elif old != row["fingerprint"]: counts["updated"] += 1; changed.append(row)
+                else: counts["unchanged"] += 1
+            if changed:
+                stmt = pg_insert(SyncedSchedule).values(changed)
+                stmt = stmt.on_conflict_do_update(
+                    constraint="uq_synced_schedule_source",
                     set_={c: getattr(stmt.excluded, c) for c in changed[0] if c not in {"id", "school_id", "source_uuid"}},
                 )
                 await db.execute(stmt)

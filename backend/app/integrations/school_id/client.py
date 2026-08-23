@@ -291,3 +291,24 @@ class SchoolIdClient:
             "clock_in_reason", "clock_out_reason", "created_at", "updated_at",
         }
         return [{key: row[key] for key in allowed if key in row} for row in payload if isinstance(row, dict)]
+
+    def fetch_schedules(self, *, class_uuid: str, school_year_id: str) -> tuple[list[dict], bool]:
+        """Jadwal pelajaran untuk satu kelas. Returns (rows, is_data_complete).
+
+        is_data_complete=False berarti School ID belum menganggap tahun ajaran
+        siap untuk penjadwalan (lihat contracts.py) - baris tetap dikembalikan
+        apa adanya (biasanya kosong) tanpa dianggap error.
+        """
+        contract = CONTRACTS["schedules"]
+        response = self._request(
+            "GET", contract.endpoint,
+            params={"class": class_uuid, "tahun_ajaran": school_year_id},
+            headers={"Accept": "application/json", "X-Requested-With": "XMLHttpRequest"},
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+            raise SchoolIdError("Envelope jadwal pelajaran berubah")
+        status = payload.get("school_year_status") or {}
+        rows = [sanitize_row(contract, row) for row in payload["data"] if isinstance(row, dict)]
+        return rows, bool(status.get("is_data_complete"))

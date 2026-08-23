@@ -19,6 +19,7 @@ DEFAULT_INTERVALS = {
     "teachers": 21600,
     "subjects": 21600,
     "students": 21600,
+    "schedules": 21600,
     "student_attendance_summary": 300,
     "student_attendance_daily": 300,
     "class_attendances": 300,

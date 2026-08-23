@@ -176,6 +176,26 @@ class SyncedClassAttendance(SourceEntityMixin, Base):
     absent_count: Mapped[int] = mapped_column(Integer, default=0)
 
 
+class SyncedSchedule(SourceEntityMixin, Base):
+    """Jadwal pelajaran (jam ke berapa, kelas, mapel, guru) dari /ajax/get/schedules.
+
+    Dipakai sebagai denominator 'yang seharusnya mengajar' untuk KPI Guru
+    Terjadwal / Guru Belum Terdeteksi di dashboard guru-siswa gabungan - kosong
+    sampai sekolah mengisi jadwal di School ID (lihat catatan di contracts.py)."""
+
+    __tablename__ = "synced_schedules"
+    __table_args__ = (UniqueConstraint("school_id", "source_uuid", name="uq_synced_schedule_source"),)
+    school_year_uuid: Mapped[str | None] = mapped_column(String(64))
+    day_of_week: Mapped[str | None] = mapped_column(String(16), index=True)
+    session_label: Mapped[str | None] = mapped_column(String(64))
+    start_time: Mapped[str | None] = mapped_column(String(8))
+    end_time: Mapped[str | None] = mapped_column(String(8))
+    class_source_uuid: Mapped[str | None] = mapped_column(String(64), index=True)
+    class_name: Mapped[str | None] = mapped_column(String(64), index=True)
+    subject_name: Mapped[str | None] = mapped_column(String(255), index=True)
+    teacher_name: Mapped[str | None] = mapped_column(String(255), index=True)
+
+
 class SyncedDomainRecord(SourceEntityMixin, Base):
     """Sanitized records for secondary domains whose upstream contract varies."""
 

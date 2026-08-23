@@ -13,6 +13,27 @@ class DataContract:
 # Explicit allowlists prevent accidental persistence of credentials, device
 # tokens, login IPs, coordinates, or other fields exposed by the upstream UI.
 CONTRACTS: dict[str, DataContract] = {
+    "schedules": DataContract(
+        name="schedules",
+        # /ajax/get/schedules - scoped per class, needs `class` (uuid) and
+        # `tahun_ajaran` (numeric school year source_id, NOT the uuid) as query
+        # params or the school_year_status comes back false/null. Confirmed
+        # working: {"data": [...], "school_year_status": {"id": <int>, "is_data_complete": true}}.
+        # `data` has been empty for every school/class checked so far (nobody has
+        # entered a jadwal yet) - field names below are a best-effort allowlist,
+        # not yet verified against a real row. Revisit sanitize_row's unexpected_fields
+        # report on the first real sync run and widen this if needed.
+        endpoint="/ajax/get/schedules",
+        fields=frozenset(
+            {
+                "uuid", "day", "day_of_week", "session", "session_number",
+                "start_time", "end_time", "class", "class_uuid", "subject",
+                "subject_uuid", "teacher", "teacher_uuid", "teacher_name",
+                "created_at", "updated_at",
+            }
+        ),
+        required_fields=frozenset(),
+    ),
     "students": DataContract(
         name="students",
         endpoint="/administration/students/data",

@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import and_, distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models_multitenant import School, SchoolYearSource, SyncedClassAttendance, SyncedStudent, SyncedStudentAttendance, SyncedSubject, SyncedTeacher
+from app.models_multitenant import School, SchoolYearSource, SyncedClassAttendance, SyncedSchedule, SyncedStudent, SyncedStudentAttendance, SyncedSubject, SyncedTeacher
 from app.config import settings
 
 _JENJANG_PREFIX = re.compile(r"^[A-Za-z]+")
@@ -342,6 +342,17 @@ async def build_guru_siswa_dashboard(
         SyncedClassAttendance.attendance_date, SyncedClassAttendance.start_time
     ))).scalars().all()
 
+    schedule_stmt = select(distinct(SyncedSchedule.teacher_name)).where(
+        SyncedSchedule.school_id == school_id, SyncedSchedule.is_deleted.is_(False), SyncedSchedule.teacher_name.isnot(None)
+    )
+    if allowed_classes:
+        schedule_stmt = schedule_stmt.where(SyncedSchedule.class_name.in_(allowed_classes))
+    if mapel and mapel != "Semua":
+        schedule_stmt = schedule_stmt.where(SyncedSchedule.subject_name == mapel)
+    if guru and guru != "Semua":
+        schedule_stmt = schedule_stmt.where(SyncedSchedule.teacher_name == guru)
+    teachers_scheduled = set((await db.execute(schedule_stmt)).scalars().all())
+
     monitoring_sesi = []
     subject_totals: dict[str, list[int]] = defaultdict(lambda: [0, 0])
     class_totals: dict[str, list[int]] = defaultdict(lambda: [0, 0])
@@ -428,9 +439,9 @@ async def build_guru_siswa_dashboard(
     return {
         "periode": {"start": start.isoformat(), "end": end.isoformat()},
         "kartu": {
-            "guru_terjadwal": None,
+            "guru_terjadwal": len(teachers_scheduled) if teachers_scheduled else None,
             "guru_hadir_mengajar": len(teachers_with_session),
-            "guru_belum_terdeteksi": None,
+            "guru_belum_terdeteksi": len(teachers_scheduled - teachers_with_session) if teachers_scheduled else None,
             "total_sesi_pelajaran": len(sessions),
             "siswa_terdaftar": total_siswa,
             "kehadiran_siswa": {"jumlah": hadir_total, "persen": round(100 * hadir_total / observed_total, 1) if observed_total else 0},
