@@ -81,11 +81,16 @@ def normalize(domain: str, row: dict, school_id: str, school_year_uuid: str | No
             "class_name": nested_value(class_data, "name") or (class_data if isinstance(class_data, str) else None),
         }
     if domain == "teachers":
+        # Unlike student rows, a teacher's "class" field is a plain name string
+        # (e.g. "X.7"), not a {uuid, name} object - so there's no uuid to join
+        # against SyncedClass here. homeroom_class_id is a legacy numeric id that
+        # doesn't match any uuid we store elsewhere either. We store the class
+        # name directly since that's the only usable value the source gives us.
         return common | {
             "nuptk": row.get("nuptk"), "name": row.get("name") or "-", "dob": parse_date(row.get("dob")),
             "gender": str(row.get("gender")) if row.get("gender") is not None else None,
             "is_active": bool(row.get("active", True)),
-            "homeroom_class_source_id": str(row.get("homeroom_class_id") or "") or None,
+            "homeroom_class_source_id": str(row.get("class") or "") or None,
         }
     if domain == "classes":
         return common | {

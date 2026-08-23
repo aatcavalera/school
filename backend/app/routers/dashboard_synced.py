@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import and_, distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models_multitenant import School, SchoolYearSource, SyncedStudent, SyncedStudentAttendance
+from app.models_multitenant import School, SchoolYearSource, SyncedStudent, SyncedStudentAttendance, SyncedTeacher
 from app.config import settings
 
 _JENJANG_PREFIX = re.compile(r"^[A-Za-z]+")
@@ -232,4 +232,52 @@ async def build_synced_dashboard(
             "coverage_percent": round(100 * len(rows) / total_siswa, 1) if total_siswa else 0,
             "is_partial": len(rows) < total_siswa, "pending_check_in": len(belum_masuk),
         },
+    }
+
+
+async def build_guru_dashboard(db: AsyncSession, school_id: str | None = None) -> dict:
+    """Dashboard guru versi minimal: hanya data master yang tersedia dari School ID
+    (nama, gender, aktif/nonaktif, wali kelas). School ID tidak menyediakan absensi
+    masuk-pulang guru, dan absensi mengajar per mapel/kelas belum terisi di sumbernya
+    untuk sekolah manapun yang terdaftar saat ini - jadi belum bisa ditampilkan."""
+    if not school_id:
+        school_id = (await db.execute(select(School.id).where(School.is_active.is_(True)).order_by(School.created_at))).scalar_one()
+
+    active_teacher = (SyncedTeacher.school_id == school_id, SyncedTeacher.is_deleted.is_(False))
+    teachers = (await db.execute(select(SyncedTeacher).where(*active_teacher).order_by(SyncedTeacher.name))).scalars().all()
+
+    gender_counts = Counter()
+    daftar_guru = []
+    for teacher in teachers:
+        gender_label = {"1": "Laki-laki", "2": "Perempuan", "L": "Laki-laki", "P": "Perempuan"}.get((teacher.gender or "").upper(), "Belum terisi")
+        gender_counts[gender_label] += 1
+        daftar_guru.append({
+            "nama": teacher.name,
+            "jenis_kelamin": gender_label,
+            "status": "Aktif" if teacher.is_active else "Nonaktif",
+            # homeroom_class_source_id sebenarnya menyimpan nama kelas (lihat sync_service.normalize),
+            # bukan uuid - sumbernya memang cuma memberi nama string, bukan objek {uuid,name}.
+            "wali_kelas": teacher.homeroom_class_source_id or None,
+        })
+
+    total_guru = len(teachers)
+    guru_aktif = sum(1 for t in teachers if t.is_active)
+    wali_kelas_terpetakan = sum(1 for g in daftar_guru if g["wali_kelas"])
+    colors = {"Laki-laki": "#3b82f6", "Perempuan": "#ec4899", "Belum terisi": "#94a3b8"}
+    komposisi_gender = [
+        {"status": label, "jumlah": gender_counts[label], "persen": round(100 * gender_counts[label] / total_guru, 1) if total_guru else 0, "color": colors[label]}
+        for label in ("Laki-laki", "Perempuan", "Belum terisi") if gender_counts[label] > 0
+    ]
+
+    return {
+        "kartu": {
+            "total_guru": total_guru, "guru_aktif": guru_aktif,
+            "guru_nonaktif": total_guru - guru_aktif, "wali_kelas_terpetakan": wali_kelas_terpetakan,
+        },
+        "komposisi_gender": komposisi_gender,
+        "daftar_guru": sorted(daftar_guru, key=lambda g: g["nama"]),
+        "catatan": (
+            "Absensi masuk-pulang guru dan absensi mengajar per mapel/kelas belum tersedia dari School ID "
+            "untuk sekolah ini - dashboard menampilkan data master guru yang tersedia."
+        ),
     }

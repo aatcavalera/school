@@ -9,7 +9,7 @@ from app.db import get_db
 from app.models import AttendanceDaily, Student, Parameter
 from app.security import get_current_username
 from app.models_multitenant import AttendanceDailyAggregate, School, SyncCheckpoint, SyncedStudent
-from app.routers.dashboard_synced import build_synced_dashboard, normalize_status, synced_filters
+from app.routers.dashboard_synced import build_guru_dashboard, build_synced_dashboard, normalize_status, synced_filters
 from app.access import CurrentUser, accessible_school_ids, get_current_user, resolve_school_id
 from app.cache import dashboard_cache
 
@@ -125,6 +125,16 @@ async def get_filters(
         "wali_kelas": await distinct_values(Student.wali_kelas),
         "tahun_ajaran": await distinct_values(Student.tahun_ajaran),
     }
+
+
+@router.get("/guru")
+async def get_guru_dashboard(
+    school_id: Optional[str] = Query(default=None),
+    user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    selected_school = await resolve_school_id(db, user, school_id)
+    return await build_guru_dashboard(db, selected_school)
 
 
 @router.get("")

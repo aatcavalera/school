@@ -106,6 +106,7 @@ function IconHourglass() {
 }
 
 export default function DashboardPage() {
+  const [mode, setMode] = useState<"siswa" | "guru">("siswa");
   const [filters, setFilters] = useState<Filters>({ jenjang: [], kelas: [], wali_kelas: [], tahun_ajaran: [] });
   const [schools, setSchools] = useState<School[]>([]);
   const [overview, setOverview] = useState<SchoolOverview[]>([]);
@@ -218,6 +219,25 @@ export default function DashboardPage() {
           </button>
         ))}
       </div>
+
+      <div className="mb-4 inline-flex rounded-lg border border-slate-200 bg-slate-50 p-1 dark:border-slate-800 dark:bg-slate-900">
+        {(["siswa", "guru"] as const).map((m) => (
+          <button
+            key={m}
+            onClick={() => setMode(m)}
+            className={`rounded-md px-4 py-1.5 text-sm font-semibold transition ${
+              mode === m ? "bg-white text-blue-700 shadow-sm dark:bg-slate-800 dark:text-blue-300" : "text-slate-500 hover:text-slate-700"
+            }`}
+          >
+            Dashboard {m === "siswa" ? "Siswa" : "Guru"}
+          </button>
+        ))}
+      </div>
+
+      {mode === "guru" ? (
+        <GuruDashboard schoolId={schoolId} />
+      ) : (
+      <>
       <div className="mb-4 rounded-xl bg-white p-4 shadow-card dark:bg-slate-900">
         <div className="flex flex-wrap items-end gap-3">
           <Field label="Sekolah">
@@ -497,7 +517,92 @@ export default function DashboardPage() {
           </div>
         </>
       )}
+      </>
+      )}
     </AppShell>
+  );
+}
+
+function GuruDashboard({ schoolId }: { schoolId: string }) {
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!schoolId) return;
+    setLoading(true);
+    setErrorMsg(null);
+    apiFetch(`/api/dashboard/guru?school_id=${encodeURIComponent(schoolId)}`)
+      .then(setData)
+      .catch((e) => setErrorMsg(e.message))
+      .finally(() => setLoading(false));
+  }, [schoolId]);
+
+  if (loading && !data) return <div className="py-20 text-center text-slate-400">Memuat data...</div>;
+  if (errorMsg) return <div className="mb-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600">{errorMsg}</div>;
+  if (!data) return null;
+
+  return (
+    <>
+      <div className="mb-4 flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+        <span className="mt-0.5">i</span>
+        <p>{data.catatan}</p>
+      </div>
+
+      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <KpiCard label="Total Guru" value={data.kartu.total_guru} sub="Terdaftar" color="bg-blue-600" icon={<IconUsers />} />
+        <KpiCard label="Guru Aktif" value={data.kartu.guru_aktif} sub="Status Aktif" color="bg-green-600" icon={<IconCheck />} />
+        <KpiCard label="Guru Nonaktif" value={data.kartu.guru_nonaktif} sub="Status Nonaktif" color="bg-slate-600" icon={<IconX />} />
+        <KpiCard label="Wali Kelas Terpetakan" value={data.kartu.wali_kelas_terpetakan} sub="Punya kelas binaan" color="bg-violet-600" icon={<IconDoor />} />
+      </div>
+
+      <div className="grid grid-cols-1 gap-3 xl:grid-cols-12">
+        <div className="rounded-xl bg-white p-4 shadow-card dark:bg-slate-900 xl:col-span-3">
+          <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">Komposisi Jenis Kelamin</h3>
+          <ul className="space-y-2 text-sm">
+            {data.komposisi_gender.map((g: any) => (
+              <li key={g.status} className="flex items-center justify-between">
+                <span className="flex items-center gap-2">
+                  <span className="h-2.5 w-2.5 rounded-full" style={{ background: g.color }} />
+                  {g.status}
+                </span>
+                <span className="font-medium">{g.jumlah} ({g.persen}%)</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+        <div className="rounded-xl bg-white p-4 shadow-card dark:bg-slate-900 xl:col-span-9">
+          <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">Daftar Guru</h3>
+          <div className="max-h-[480px] overflow-auto">
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 bg-white text-left text-xs uppercase text-slate-400 dark:bg-slate-900">
+                <tr>
+                  <th className="pb-2">Nama</th>
+                  <th className="pb-2">Jenis Kelamin</th>
+                  <th className="pb-2">Status</th>
+                  <th className="pb-2">Wali Kelas</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.daftar_guru.map((g: any, i: number) => (
+                  <tr key={i} className="border-t border-slate-100 dark:border-slate-800">
+                    <td className="py-2 font-medium">{g.nama}</td>
+                    <td className="py-2">{g.jenis_kelamin}</td>
+                    <td className="py-2">
+                      <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${g.status === "Aktif" ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-500"}`}>
+                        {g.status}
+                      </span>
+                    </td>
+                    <td className="py-2 text-slate-500">{g.wali_kelas || "-"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {data.daftar_guru.length === 0 && <p className="py-6 text-center text-slate-400">Belum ada data guru.</p>}
+          </div>
+        </div>
+      </div>
+    </>
   );
 }
 
