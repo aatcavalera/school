@@ -17,6 +17,7 @@ from app.models_multitenant import (
     SyncError,
     SyncRun,
     SyncedClass,
+    SyncedClassAttendance,
     SyncedStudent,
     SyncedSubject,
     SyncedTeacher,
@@ -141,6 +142,8 @@ class SyncService:
                 counts = await self._sync_attendance_summary(client, school_id, scope or {})
             elif domain == "student_attendance_daily":
                 counts = await self._sync_daily_attendance(client, school_id, scope or {})
+            elif domain == "class_attendances":
+                counts = await self._sync_class_attendances(client, school_id, scope or {})
             else:
                 school_year_uuid = (scope or {}).get("school_year_uuid")
                 if domain == "students" and not school_year_uuid:
@@ -224,6 +227,73 @@ class SyncService:
             "fingerprint": fingerprint(approved), "source_updated_at": parse_datetime(row.get("updated_at")),
             "last_synced_at": datetime.now(timezone.utc),
         }
+
+    async def _sync_class_attendances(self, client, school_id: str, scope: dict) -> dict:
+        """Sesi mengajar per mapel/kelas (fitur 'absensi per mapel' School ID).
+
+        Sengaja tidak requires_school_year (lihat contracts.py) - dipaging generik
+        seperti students/teachers, difilter rentang tanggal lewat extra_params.
+        """
+        end_date = parse_date(scope.get("end_date")) or datetime.now(timezone.utc).date()
+        start_date = parse_date(scope.get("start_date")) or (end_date - timedelta(days=30))
+        totals = {"seen": 0, "inserted": 0, "updated": 0, "unchanged": 0}
+        iterator = client.iter_pages(
+            "class_attendances", page_size=100,
+            extra_params={"start_date": start_date.isoformat(), "end_date": end_date.isoformat()},
+        )
+        while True:
+            page = await asyncio.to_thread(lambda: next(iterator, None))
+            if page is None:
+                break
+            rows = [self._normalize_class_attendance(school_id, row) for row in page.rows if parse_date(row.get("date"))]
+            counts = await self._upsert_class_attendances(school_id, rows)
+            for key in totals:
+                totals[key] += counts[key]
+        await self._checkpoint(school_id, "class_attendances", f"{start_date}:{end_date}", totals)
+        return totals
+
+    def _normalize_class_attendance(self, school_id: str, row: dict) -> dict:
+        approved = dict(row)
+        return {
+            "school_id": school_id, "source_uuid": str(row["uuid"]),
+            "attendance_date": parse_date(row.get("date")),
+            "class_name": str(row.get("class") or "") or None,
+            "subject_name": str(row.get("subject") or "") or None,
+            "teacher_name": str(row.get("teacher_name") or row.get("teacher") or "") or None,
+            "session_label": str(row.get("session") or row.get("session_number") or "") or None,
+            "start_time": str(row.get("start_time"))[:8] if row.get("start_time") else None,
+            "end_time": str(row.get("end_time"))[:8] if row.get("end_time") else None,
+            "present_count": int(row.get("present_count") or 0),
+            "absent_count": int(row.get("absent_count") or 0),
+            "source_updated_at": parse_datetime(row.get("updated_at")),
+            "fingerprint": fingerprint(approved), "is_deleted": False,
+            "last_synced_at": datetime.now(timezone.utc),
+        }
+
+    async def _upsert_class_attendances(self, school_id: str, rows: list[dict]) -> dict:
+        counts = {"seen": len(rows), "inserted": 0, "updated": 0, "unchanged": 0}
+        if not rows:
+            return counts
+        uuids = [row["source_uuid"] for row in rows]
+        async with SessionLocal() as db:
+            existing = dict((await db.execute(select(
+                SyncedClassAttendance.source_uuid, SyncedClassAttendance.fingerprint
+            ).where(SyncedClassAttendance.school_id == school_id, SyncedClassAttendance.source_uuid.in_(uuids)))).all())
+            changed = []
+            for row in rows:
+                old = existing.get(row["source_uuid"])
+                if old is None: counts["inserted"] += 1; changed.append(row)
+                elif old != row["fingerprint"]: counts["updated"] += 1; changed.append(row)
+                else: counts["unchanged"] += 1
+            if changed:
+                stmt = pg_insert(SyncedClassAttendance).values(changed)
+                stmt = stmt.on_conflict_do_update(
+                    constraint="uq_synced_class_attendance_source",
+                    set_={c: getattr(stmt.excluded, c) for c in changed[0] if c not in {"id", "school_id", "source_uuid"}},
+                )
+                await db.execute(stmt)
+                await db.commit()
+        return counts
 
     async def _upsert_attendance(self, school_id: str, rows: list[dict]) -> dict:
         counts = {"seen": len(rows), "inserted": 0, "updated": 0, "unchanged": 0}

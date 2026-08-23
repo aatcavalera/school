@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import and_, distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models_multitenant import School, SchoolYearSource, SyncedStudent, SyncedStudentAttendance, SyncedTeacher
+from app.models_multitenant import School, SchoolYearSource, SyncedClassAttendance, SyncedStudent, SyncedStudentAttendance, SyncedSubject, SyncedTeacher
 from app.config import settings
 
 _JENJANG_PREFIX = re.compile(r"^[A-Za-z]+")
@@ -279,5 +279,173 @@ async def build_guru_dashboard(db: AsyncSession, school_id: str | None = None) -
         "catatan": (
             "Absensi masuk-pulang guru dan absensi mengajar per mapel/kelas belum tersedia dari School ID "
             "untuk sekolah ini - dashboard menampilkan data master guru yang tersedia."
+        ),
+    }
+
+
+async def guru_siswa_filters(db: AsyncSession, school_id: str) -> dict:
+    classes = (await db.execute(select(distinct(SyncedStudent.class_name)).where(
+        SyncedStudent.school_id == school_id, SyncedStudent.is_deleted.is_(False), SyncedStudent.class_name.isnot(None)
+    ).order_by(SyncedStudent.class_name))).scalars().all()
+    subjects = (await db.execute(select(distinct(SyncedSubject.name)).where(
+        SyncedSubject.school_id == school_id, SyncedSubject.is_deleted.is_(False)
+    ).order_by(SyncedSubject.name))).scalars().all()
+    teachers = (await db.execute(select(distinct(SyncedTeacher.name)).where(
+        SyncedTeacher.school_id == school_id, SyncedTeacher.is_deleted.is_(False), SyncedTeacher.is_active.is_(True)
+    ).order_by(SyncedTeacher.name))).scalars().all()
+    return {
+        "jenjang": sorted({jenjang_from_class(name) for name in classes}),
+        "kelas": classes, "mata_pelajaran": subjects, "guru": teachers,
+    }
+
+
+async def build_guru_siswa_dashboard(
+    db: AsyncSession, start: dt.date, end: dt.date,
+    jenjang: str, kelas: str, mapel: str, guru: str, school_id: str | None = None,
+) -> dict:
+    """Dashboard gabungan kehadiran guru mengajar + siswa per sesi (per gambar
+    contoh). Kehadiran guru disimpulkan dari sesi (SyncedClassAttendance) yang
+    tercatat lewat fitur 'absensi per mapel' School ID, BUKAN dari clock-in/out
+    guru terpisah (sumbernya tidak punya itu). Guru Terjadwal / Belum Terdeteksi
+    butuh data Jadwal Pelajaran yang saat ini tidak tersedia sama sekali dari
+    School ID untuk sekolah manapun yang terdaftar (schedules_count = 0 di semua
+    kelas) - keduanya dikembalikan null sampai sumber jadwal itu ada.
+    """
+    if not school_id:
+        school_id = (await db.execute(select(School.id).where(School.is_active.is_(True)).order_by(School.created_at))).scalar_one()
+    school = await db.get(School, school_id)
+    school_timezone = school.timezone if school else "Asia/Makassar"
+    late_cutoff = school.late_cutoff_time if school else None
+
+    active_student = (SyncedStudent.school_id == school_id, SyncedStudent.is_deleted.is_(False))
+    student_stmt = select(SyncedStudent.name, SyncedStudent.class_name).where(*active_student)
+    if kelas and kelas != "Semua":
+        student_stmt = student_stmt.where(SyncedStudent.class_name == kelas)
+    students = (await db.execute(student_stmt)).all()
+    if jenjang and jenjang != "Semua":
+        students = [(name, class_name) for name, class_name in students if jenjang_from_class(class_name) == jenjang]
+    allowed_classes = {class_name for _, class_name in students if class_name}
+    total_siswa = len(students)
+
+    session_stmt = select(SyncedClassAttendance).where(
+        SyncedClassAttendance.school_id == school_id,
+        SyncedClassAttendance.attendance_date.between(start, end),
+        SyncedClassAttendance.is_deleted.is_(False),
+    )
+    if allowed_classes:
+        session_stmt = session_stmt.where(SyncedClassAttendance.class_name.in_(allowed_classes))
+    if mapel and mapel != "Semua":
+        session_stmt = session_stmt.where(SyncedClassAttendance.subject_name == mapel)
+    if guru and guru != "Semua":
+        session_stmt = session_stmt.where(SyncedClassAttendance.teacher_name == guru)
+    sessions = (await db.execute(session_stmt.order_by(
+        SyncedClassAttendance.attendance_date, SyncedClassAttendance.start_time
+    ))).scalars().all()
+
+    monitoring_sesi = []
+    subject_totals: dict[str, list[int]] = defaultdict(lambda: [0, 0])
+    class_totals: dict[str, list[int]] = defaultdict(lambda: [0, 0])
+    teachers_with_session = set()
+    daily_session_counts: dict[dt.date, int] = defaultdict(int)
+    for s in sessions:
+        observed = s.present_count + s.absent_count
+        persen = round(100 * s.present_count / observed, 1) if observed else 0.0
+        monitoring_sesi.append({
+            "tanggal": s.attendance_date.isoformat(),
+            "jam": s.start_time, "sesi": s.session_label, "kelas": s.class_name,
+            "mata_pelajaran": s.subject_name, "guru": s.teacher_name,
+            "status_guru": "Hadir Mengajar" if s.present_count > 0 or s.absent_count > 0 else "Belum Terdeteksi",
+            "siswa_hadir": s.present_count, "siswa_alpha": s.absent_count,
+            "kehadiran_persen": persen,
+        })
+        if s.subject_name:
+            subject_totals[s.subject_name][0] += s.present_count
+            subject_totals[s.subject_name][1] += observed
+        if s.class_name:
+            class_totals[s.class_name][0] += s.present_count
+            class_totals[s.class_name][1] += observed
+        if s.teacher_name:
+            teachers_with_session.add(s.teacher_name)
+        daily_session_counts[s.attendance_date] += 1
+
+    kehadiran_per_mapel = sorted(
+        [{"mapel": name, "persen": round(100 * present / total, 1) if total else 0} for name, (present, total) in subject_totals.items()],
+        key=lambda item: item["persen"], reverse=True,
+    )
+    kehadiran_per_kelas = sorted(
+        [{"kelas": name, "persen": round(100 * present / total, 1) if total else 0} for name, (present, total) in class_totals.items()],
+        key=lambda item: item["persen"], reverse=True,
+    )
+    trend_guru = [{"tanggal": d.isoformat(), "jumlah_sesi": c} for d, c in sorted(daily_session_counts.items())]
+
+    attendance_stmt = select(SyncedStudentAttendance).where(
+        SyncedStudentAttendance.school_id == school_id,
+        SyncedStudentAttendance.attendance_date.between(start, end),
+    )
+    if allowed_classes:
+        attendance_stmt = attendance_stmt.where(SyncedStudentAttendance.class_name.in_(allowed_classes))
+    student_rows = (await db.execute(attendance_stmt)).scalars().all()
+    status_counts = Counter(
+        classify_status(row.status, row.clock_in_time, row.attendance_date, school_timezone, late_cutoff)
+        for row in student_rows
+    )
+    daily_student: dict[dt.date, Counter] = defaultdict(Counter)
+    for row in student_rows:
+        label = classify_status(row.status, row.clock_in_time, row.attendance_date, school_timezone, late_cutoff)
+        daily_student[row.attendance_date][label] += 1
+    trend_siswa = []
+    for day in sorted(daily_student):
+        day_total = sum(daily_student[day].values())
+        day_present = daily_student[day]["Hadir"] + daily_student[day]["Terlambat"]
+        trend_siswa.append({"tanggal": day.isoformat(), "persentase": round(100 * day_present / day_total, 1) if day_total else 0})
+
+    hadir_total = status_counts["Hadir"] + status_counts["Terlambat"]
+    observed_total = sum(status_counts.values())
+    colors = {"Hadir": "#22c55e", "Terlambat": "#f59e0b", "Izin": "#eab308", "Sakit": "#3b82f6", "Alpha": "#ef4444"}
+    ringkasan_siswa = [
+        {"status": status, "jumlah": status_counts[status], "persen": round(100 * status_counts[status] / observed_total, 1) if observed_total else 0, "color": colors[status]}
+        for status in colors if status_counts[status] > 0
+    ]
+
+    perlu_perhatian = []
+    belum_terdeteksi = sum(1 for s in monitoring_sesi if s["status_guru"] == "Belum Terdeteksi")
+    if belum_terdeteksi:
+        perlu_perhatian.append(f"{belum_terdeteksi} sesi belum terdeteksi (guru belum melakukan absensi siswa pada sesi yang sudah berjalan).")
+    if status_counts["Alpha"]:
+        perlu_perhatian.append(f"{status_counts['Alpha']} siswa Alpha tanpa keterangan pada periode ini.")
+    if kehadiran_per_kelas:
+        terendah = kehadiran_per_kelas[-1]
+        perlu_perhatian.append(f"Kelas {terendah['kelas']} memiliki kehadiran terendah ({terendah['persen']}%).")
+    if kehadiran_per_mapel:
+        terendah_mapel = kehadiran_per_mapel[-1]
+        perlu_perhatian.append(f"Mata pelajaran {terendah_mapel['mapel']} memiliki kehadiran siswa terendah ({terendah_mapel['persen']}%).")
+    if not sessions:
+        perlu_perhatian.append(
+            "Belum ada sesi mengajar tercatat pada periode ini - sekolah belum mengisi Jadwal Pelajaran dan/atau "
+            "belum memakai fitur absensi per mata pelajaran di School ID."
+        )
+
+    return {
+        "periode": {"start": start.isoformat(), "end": end.isoformat()},
+        "kartu": {
+            "guru_terjadwal": None,
+            "guru_hadir_mengajar": len(teachers_with_session),
+            "guru_belum_terdeteksi": None,
+            "total_sesi_pelajaran": len(sessions),
+            "siswa_terdaftar": total_siswa,
+            "kehadiran_siswa": {"jumlah": hadir_total, "persen": round(100 * hadir_total / observed_total, 1) if observed_total else 0},
+            "izin": status_counts["Izin"], "sakit": status_counts["Sakit"], "alpha": status_counts["Alpha"],
+        },
+        "monitoring_sesi": monitoring_sesi,
+        "trend_guru": trend_guru,
+        "trend_siswa": trend_siswa,
+        "kehadiran_per_mapel": kehadiran_per_mapel,
+        "kehadiran_per_kelas": kehadiran_per_kelas,
+        "ringkasan_siswa": ringkasan_siswa,
+        "perlu_perhatian": perlu_perhatian,
+        "catatan": (
+            "Kehadiran guru dihitung berdasarkan absensi siswa yang dilakukan guru pada setiap sesi mata pelajaran "
+            "(fitur 'absensi per mapel' School ID). \"Guru Terjadwal\" dan \"Guru Belum Terdeteksi\" butuh data "
+            "Jadwal Pelajaran yang belum diisi sekolah di School ID, jadi belum bisa ditampilkan."
         ),
     }

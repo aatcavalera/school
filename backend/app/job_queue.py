@@ -21,6 +21,7 @@ DEFAULT_INTERVALS = {
     "students": 21600,
     "student_attendance_summary": 300,
     "student_attendance_daily": 300,
+    "class_attendances": 300,
 }
 
 
@@ -63,7 +64,7 @@ async def schedule_due_jobs() -> int:
     settings_map = {(row.school_id, row.domain): row for row in settings_rows}
     for school in schools:
         for domain, default_interval in DEFAULT_INTERVALS.items():
-            if domain in {"student_attendance_summary", "student_attendance_daily"} and not attendance_window_open(school, now):
+            if domain in {"student_attendance_summary", "student_attendance_daily", "class_attendances"} and not attendance_window_open(school, now):
                 continue
             row = settings_map.get((school.id, domain))
             interval = row.interval_seconds if row else default_interval

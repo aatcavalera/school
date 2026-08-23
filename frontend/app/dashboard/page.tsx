@@ -106,7 +106,7 @@ function IconHourglass() {
 }
 
 export default function DashboardPage() {
-  const [mode, setMode] = useState<"siswa" | "guru">("siswa");
+  const [mode, setMode] = useState<"siswa" | "guru" | "gabungan">("siswa");
   const [filters, setFilters] = useState<Filters>({ jenjang: [], kelas: [], wali_kelas: [], tahun_ajaran: [] });
   const [schools, setSchools] = useState<School[]>([]);
   const [overview, setOverview] = useState<SchoolOverview[]>([]);
@@ -221,7 +221,7 @@ export default function DashboardPage() {
       </div>
 
       <div className="mb-4 inline-flex rounded-lg border border-slate-200 bg-slate-50 p-1 dark:border-slate-800 dark:bg-slate-900">
-        {(["siswa", "guru"] as const).map((m) => (
+        {(["siswa", "guru", "gabungan"] as const).map((m) => (
           <button
             key={m}
             onClick={() => setMode(m)}
@@ -229,13 +229,15 @@ export default function DashboardPage() {
               mode === m ? "bg-white text-blue-700 shadow-sm dark:bg-slate-800 dark:text-blue-300" : "text-slate-500 hover:text-slate-700"
             }`}
           >
-            Dashboard {m === "siswa" ? "Siswa" : "Guru"}
+            {m === "siswa" ? "Dashboard Siswa" : m === "guru" ? "Dashboard Guru" : "Monitoring Guru & Siswa"}
           </button>
         ))}
       </div>
 
       {mode === "guru" ? (
         <GuruDashboard schoolId={schoolId} />
+      ) : mode === "gabungan" ? (
+        <GuruSiswaDashboard schoolId={schoolId} />
       ) : (
       <>
       <div className="mb-4 rounded-xl bg-white p-4 shadow-card dark:bg-slate-900">
@@ -604,6 +606,257 @@ function GuruDashboard({ schoolId }: { schoolId: string }) {
       </div>
     </>
   );
+}
+
+type GuruSiswaFilters = { jenjang: string[]; kelas: string[]; mata_pelajaran: string[]; guru: string[] };
+
+function GuruSiswaDashboard({ schoolId }: { schoolId: string }) {
+  const [filters, setFilters] = useState<GuruSiswaFilters>({ jenjang: [], kelas: [], mata_pelajaran: [], guru: [] });
+  const [start, setStart] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 6);
+    return d.toISOString().slice(0, 10);
+  });
+  const [end, setEnd] = useState(new Date().toISOString().slice(0, 10));
+  const [jenjang, setJenjang] = useState("Semua");
+  const [kelas, setKelas] = useState("Semua");
+  const [mapel, setMapel] = useState("Semua");
+  const [guru, setGuru] = useState("Semua");
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    if (!schoolId) return;
+    setLoading(true);
+    setErrorMsg(null);
+    try {
+      const qs = new URLSearchParams({ school_id: schoolId, start, end, jenjang, kelas, mapel, guru });
+      const res = await apiFetch(`/api/dashboard/guru-siswa?${qs.toString()}`);
+      setData(res);
+    } catch (e: any) {
+      setErrorMsg(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [schoolId, start, end, jenjang, kelas, mapel, guru]);
+
+  useEffect(() => {
+    if (!schoolId) return;
+    apiFetch(`/api/dashboard/guru-siswa/filters?school_id=${encodeURIComponent(schoolId)}`).then(setFilters).catch(() => {});
+  }, [schoolId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  function resetFilters() {
+    const d = new Date();
+    d.setDate(d.getDate() - 6);
+    setStart(d.toISOString().slice(0, 10));
+    setEnd(new Date().toISOString().slice(0, 10));
+    setJenjang("Semua"); setKelas("Semua"); setMapel("Semua"); setGuru("Semua");
+  }
+
+  return (
+    <>
+      <div className="mb-4 rounded-xl bg-white p-4 shadow-card dark:bg-slate-900">
+        <div className="flex flex-wrap items-end gap-3">
+          <Field label="Dari Tanggal">
+            <input type="date" value={start} onChange={(e) => setStart(e.target.value)} className="input" />
+          </Field>
+          <Field label="Sampai Tanggal">
+            <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} className="input" />
+          </Field>
+          <Field label="Jenjang">
+            <select value={jenjang} onChange={(e) => setJenjang(e.target.value)} className="input">
+              <option>Semua</option>
+              {filters.jenjang.map((j) => <option key={j}>{j}</option>)}
+            </select>
+          </Field>
+          <Field label="Kelas">
+            <select value={kelas} onChange={(e) => setKelas(e.target.value)} className="input">
+              <option>Semua</option>
+              {filters.kelas.map((k) => <option key={k}>{k}</option>)}
+            </select>
+          </Field>
+          <Field label="Mata Pelajaran">
+            <select value={mapel} onChange={(e) => setMapel(e.target.value)} className="input">
+              <option>Semua</option>
+              {filters.mata_pelajaran.map((m) => <option key={m}>{m}</option>)}
+            </select>
+          </Field>
+          <Field label="Guru">
+            <select value={guru} onChange={(e) => setGuru(e.target.value)} className="input">
+              <option>Semua</option>
+              {filters.guru.map((g) => <option key={g}>{g}</option>)}
+            </select>
+          </Field>
+          <button onClick={load} className="btn-primary">Terapkan</button>
+          <button onClick={resetFilters} className="btn-secondary">Reset Filter</button>
+        </div>
+      </div>
+
+      {errorMsg && <div className="mb-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600">{errorMsg}</div>}
+
+      {loading && !data ? (
+        <div className="py-20 text-center text-slate-400">Memuat data...</div>
+      ) : !data ? null : (
+        <>
+          <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-8">
+            <KpiCard label="Guru Terjadwal" value={data.kartu.guru_terjadwal ?? "—"} sub="Perlu Jadwal Pelajaran" color="bg-slate-500" icon={<IconUsers />} />
+            <KpiCard label="Guru Hadir Mengajar" value={data.kartu.guru_hadir_mengajar} sub="Ada sesi tercatat" color="bg-green-600" icon={<IconCheck />} />
+            <KpiCard label="Guru Belum Terdeteksi" value={data.kartu.guru_belum_terdeteksi ?? "—"} sub="Perlu Jadwal Pelajaran" color="bg-slate-500" icon={<IconX />} />
+            <KpiCard label="Total Sesi Pelajaran" value={data.kartu.total_sesi_pelajaran} sub="Periode terpilih" color="bg-violet-600" icon={<IconClock />} />
+            <KpiCard label="Siswa Terdaftar" value={data.kartu.siswa_terdaftar.toLocaleString("id-ID")} sub="Siswa Aktif" color="bg-blue-600" icon={<IconUsers />} />
+            <KpiCard label="Kehadiran Siswa" value={data.kartu.kehadiran_siswa.jumlah.toLocaleString("id-ID")} sub={`${data.kartu.kehadiran_siswa.persen}%`} color="bg-green-600" icon={<IconCheck />} />
+            <KpiCard label="Izin" value={data.kartu.izin} sub="Periode terpilih" color="bg-yellow-500" icon={<IconDoc />} />
+            <KpiCard label="Sakit" value={data.kartu.sakit} sub="Periode terpilih" color="bg-sky-500" icon={<IconBag />} />
+          </div>
+
+          <Panel title={`Monitoring Sesi (${data.monitoring_sesi.length})`} className="mb-4">
+            <div className="max-h-96 overflow-auto">
+              <table className="w-full text-sm">
+                <thead className="sticky top-0 bg-white text-left text-xs uppercase text-slate-400 dark:bg-slate-900">
+                  <tr>
+                    <th className="pb-2 pr-3">Tanggal</th>
+                    <th className="pb-2 pr-3">Jam</th>
+                    <th className="pb-2 pr-3">Kelas</th>
+                    <th className="pb-2 pr-3">Mata Pelajaran</th>
+                    <th className="pb-2 pr-3">Guru</th>
+                    <th className="pb-2 pr-3">Status Guru</th>
+                    <th className="pb-2 pr-3 text-right">Hadir</th>
+                    <th className="pb-2 pr-3 text-right">Alpha</th>
+                    <th className="pb-2 text-right">Kehadiran</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.monitoring_sesi.map((s: any, i: number) => (
+                    <tr key={i} className="border-t border-slate-100 dark:border-slate-800">
+                      <td className="py-2 pr-3">{s.tanggal}</td>
+                      <td className="py-2 pr-3">{s.jam || "-"}</td>
+                      <td className="py-2 pr-3">{s.kelas}</td>
+                      <td className="py-2 pr-3">{s.mata_pelajaran}</td>
+                      <td className="py-2 pr-3">{s.guru || "-"}</td>
+                      <td className="py-2 pr-3">
+                        <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${s.status_guru === "Hadir Mengajar" ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}`}>
+                          {s.status_guru}
+                        </span>
+                      </td>
+                      <td className="py-2 pr-3 text-right">{s.siswa_hadir}</td>
+                      <td className="py-2 pr-3 text-right">{s.siswa_alpha}</td>
+                      <td className="py-2 text-right font-semibold">{s.kehadiran_persen}%</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {data.monitoring_sesi.length === 0 && (
+                <p className="py-8 text-center text-sm text-slate-400">
+                  Belum ada sesi mengajar tercatat pada periode ini.
+                </p>
+              )}
+            </div>
+          </Panel>
+
+          <div className="mb-4 grid grid-cols-1 gap-3 xl:grid-cols-12">
+            <Panel title="Kehadiran Guru (Trend)" className="xl:col-span-4">
+              {data.trend_guru.length > 0 ? (
+                <ResponsiveContainer width="100%" height={200}>
+                  <LineChart data={data.trend_guru}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                    <XAxis dataKey="tanggal" tick={{ fontSize: 10 }} tickFormatter={(v) => v.slice(5)} />
+                    <YAxis tick={{ fontSize: 10 }} />
+                    <Tooltip />
+                    <Line type="monotone" dataKey="jumlah_sesi" name="Sesi Tercatat" stroke="#3b82f6" strokeWidth={2} />
+                  </LineChart>
+                </ResponsiveContainer>
+              ) : <EmptyChart />}
+            </Panel>
+            <Panel title="Kehadiran Siswa (Trend)" className="xl:col-span-4">
+              {data.trend_siswa.length > 0 ? (
+                <ResponsiveContainer width="100%" height={200}>
+                  <LineChart data={data.trend_siswa}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                    <XAxis dataKey="tanggal" tick={{ fontSize: 10 }} tickFormatter={(v) => v.slice(5)} />
+                    <YAxis tick={{ fontSize: 10 }} unit="%" />
+                    <Tooltip />
+                    <Line type="monotone" dataKey="persentase" name="Kehadiran" stroke="#22c55e" strokeWidth={2} />
+                  </LineChart>
+                </ResponsiveContainer>
+              ) : <EmptyChart />}
+            </Panel>
+            <Panel title="Ringkasan Siswa" className="xl:col-span-4">
+              {data.ringkasan_siswa.length > 0 ? (
+                <div className="relative">
+                  <ResponsiveContainer width="100%" height={180}>
+                    <PieChart>
+                      <Pie data={data.ringkasan_siswa} dataKey="jumlah" nameKey="status" innerRadius={50} outerRadius={75}>
+                        {data.ringkasan_siswa.map((entry: any, i: number) => <Cell key={i} fill={entry.color} />)}
+                      </Pie>
+                      <Tooltip />
+                    </PieChart>
+                  </ResponsiveContainer>
+                  <ul className="mt-1 space-y-1 text-xs">
+                    {data.ringkasan_siswa.map((r: any) => (
+                      <li key={r.status} className="flex items-center justify-between">
+                        <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full" style={{ background: r.color }} />{r.status}</span>
+                        <span className="font-medium">{r.jumlah} ({r.persen}%)</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : <EmptyChart />}
+            </Panel>
+          </div>
+
+          <div className="mb-4 grid grid-cols-1 gap-3 xl:grid-cols-12">
+            <Panel title="Kehadiran Siswa per Mata Pelajaran" className="xl:col-span-4">
+              {data.kehadiran_per_mapel.length > 0 ? (
+                <ResponsiveContainer width="100%" height={220}>
+                  <BarChart data={data.kehadiran_per_mapel} layout="vertical" margin={{ left: 10 }}>
+                    <XAxis type="number" domain={[0, 100]} tick={{ fontSize: 10 }} unit="%" />
+                    <YAxis type="category" dataKey="mapel" width={80} tick={{ fontSize: 10 }} />
+                    <Tooltip />
+                    <Bar dataKey="persen" fill="#3b82f6" radius={[0, 4, 4, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              ) : <EmptyChart />}
+            </Panel>
+            <Panel title="Kehadiran Siswa per Kelas" className="xl:col-span-4">
+              {data.kehadiran_per_kelas.length > 0 ? (
+                <ResponsiveContainer width="100%" height={220}>
+                  <BarChart data={data.kehadiran_per_kelas} layout="vertical" margin={{ left: 10 }}>
+                    <XAxis type="number" domain={[0, 100]} tick={{ fontSize: 10 }} unit="%" />
+                    <YAxis type="category" dataKey="kelas" width={45} tick={{ fontSize: 10 }} />
+                    <Tooltip />
+                    <Bar dataKey="persen" fill="#22c55e" radius={[0, 4, 4, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              ) : <EmptyChart />}
+            </Panel>
+            <Panel title="Perlu Perhatian" className="xl:col-span-4">
+              <ul className="space-y-2 text-sm">
+                {data.perlu_perhatian.length === 0 && <li className="text-slate-400">Tidak ada catatan khusus.</li>}
+                {data.perlu_perhatian.map((p: string, i: number) => (
+                  <li key={i} className="flex items-start gap-2">
+                    <span className="mt-1 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-red-500" />
+                    <span>{p}</span>
+                  </li>
+                ))}
+              </ul>
+            </Panel>
+          </div>
+
+          <div className="flex items-start gap-3 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-200">
+            <span className="mt-0.5">i</span>
+            <p>{data.catatan}</p>
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
+function EmptyChart() {
+  return <p className="py-16 text-center text-sm text-slate-400">Belum ada data untuk periode ini.</p>;
 }
 
 function pct(n: number, total: number) {

@@ -9,7 +9,14 @@ from app.db import get_db
 from app.models import AttendanceDaily, Student, Parameter
 from app.security import get_current_username
 from app.models_multitenant import AttendanceDailyAggregate, School, SyncCheckpoint, SyncedStudent
-from app.routers.dashboard_synced import build_guru_dashboard, build_synced_dashboard, normalize_status, synced_filters
+from app.routers.dashboard_synced import (
+    build_guru_dashboard,
+    build_guru_siswa_dashboard,
+    build_synced_dashboard,
+    guru_siswa_filters,
+    normalize_status,
+    synced_filters,
+)
 from app.access import CurrentUser, accessible_school_ids, get_current_user, resolve_school_id
 from app.cache import dashboard_cache
 
@@ -135,6 +142,36 @@ async def get_guru_dashboard(
 ):
     selected_school = await resolve_school_id(db, user, school_id)
     return await build_guru_dashboard(db, selected_school)
+
+
+@router.get("/guru-siswa/filters")
+async def get_guru_siswa_filters(
+    school_id: Optional[str] = Query(default=None),
+    user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    selected_school = await resolve_school_id(db, user, school_id)
+    return await guru_siswa_filters(db, selected_school)
+
+
+@router.get("/guru-siswa")
+async def get_guru_siswa_dashboard(
+    start: Optional[dt.date] = Query(default=None),
+    end: Optional[dt.date] = Query(default=None),
+    jenjang: Optional[str] = Query(default="Semua"),
+    kelas: Optional[str] = Query(default="Semua"),
+    mapel: Optional[str] = Query(default="Semua"),
+    guru: Optional[str] = Query(default="Semua"),
+    school_id: Optional[str] = Query(default=None),
+    user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    selected_school = await resolve_school_id(db, user, school_id)
+    if end is None:
+        end = dt.date.today()
+    if start is None:
+        start = end - dt.timedelta(days=6)
+    return await build_guru_siswa_dashboard(db, start, end, jenjang, kelas, mapel, guru, selected_school)
 
 
 @router.get("")

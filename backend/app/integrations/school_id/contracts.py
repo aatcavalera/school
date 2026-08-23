@@ -84,6 +84,10 @@ CONTRACTS: dict[str, DataContract] = {
             {
                 "uuid", "date", "class", "subject", "present_count",
                 "absent_count", "created_at", "updated_at",
+                # Belum pernah teramati di data nyata (kedua sekolah belum pakai fitur ini),
+                # nama field ditambahkan mendahului supaya kalau nanti sekolah mulai isi
+                "teacher", "teacher_uuid", "teacher_name", "session", "session_number",
+                "start_time", "end_time", "class_uuid", "subject_uuid",
             }
         ),
         required_fields=frozenset(),

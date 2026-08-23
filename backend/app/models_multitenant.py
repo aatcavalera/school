@@ -158,6 +158,24 @@ class SyncedSubject(SourceEntityMixin, Base):
     name: Mapped[str] = mapped_column(String(255))
 
 
+class SyncedClassAttendance(SourceEntityMixin, Base):
+    """Satu sesi mengajar (kelas x mapel x tanggal) dari fitur 'absensi per mapel'
+    School ID - dasar untuk dashboard guru-siswa gabungan. Kosong sampai sekolah
+    benar-benar memakai fitur ini (lihat catatan di contracts.py: class_attendances)."""
+
+    __tablename__ = "synced_class_attendances"
+    __table_args__ = (UniqueConstraint("school_id", "source_uuid", name="uq_synced_class_attendance_source"),)
+    attendance_date: Mapped[date] = mapped_column(Date, index=True)
+    class_name: Mapped[str | None] = mapped_column(String(64), index=True)
+    subject_name: Mapped[str | None] = mapped_column(String(255), index=True)
+    teacher_name: Mapped[str | None] = mapped_column(String(255), index=True)
+    session_label: Mapped[str | None] = mapped_column(String(64))
+    start_time: Mapped[str | None] = mapped_column(String(8))
+    end_time: Mapped[str | None] = mapped_column(String(8))
+    present_count: Mapped[int] = mapped_column(Integer, default=0)
+    absent_count: Mapped[int] = mapped_column(Integer, default=0)
+
+
 class SyncedDomainRecord(SourceEntityMixin, Base):
     """Sanitized records for secondary domains whose upstream contract varies."""
 
